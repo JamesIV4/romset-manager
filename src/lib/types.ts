@@ -1,6 +1,7 @@
 export type SourceKey =
   | 'fullDir'
   | 'fbneoFullDir'
+  | 'fbneoSampleTargetDir'
   | 'fbneoTargetDir'
   | 'xmlFile'
   | 'targetDir'
@@ -11,6 +12,7 @@ export type SourceKey =
 export type SourceHandles = {
   fullDir: FileSystemDirectoryHandle | null;
   fbneoFullDir: FileSystemDirectoryHandle | null;
+  fbneoSampleTargetDir: FileSystemDirectoryHandle | null;
   fbneoTargetDir: FileSystemDirectoryHandle | null;
   xmlFile: FileSystemFileHandle | null;
   targetDir: FileSystemDirectoryHandle | null;

@@ -647,6 +647,10 @@ tbody tr:hover {
   width: 128px;
 }
 
+.samples-col {
+  width: 104px;
+}
+
 .region-col {
   width: 88px;
 }
@@ -688,6 +692,37 @@ tbody tr:hover {
 .status-none {
   background: #fde8e5;
   color: #9c2b23;
+}
+
+.sample-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 82px;
+  height: 26px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sample-present {
+  background: #e3f2e3;
+  color: #1b6b30;
+}
+
+.sample-missing {
+  background: #fff1c9;
+  color: #835a08;
+}
+
+.sample-unavailable {
+  background: #fde8e5;
+  color: #9c2b23;
+}
+
+.sample-none {
+  background: #eee8dd;
+  color: #6e665c;
 }
 
 .game-title {

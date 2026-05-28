@@ -277,6 +277,29 @@ export function buildSamplePlan(
   };
 }
 
+export function buildMatchingSamplePlan(
+  selectedIds: Iterable<string>,
+  entries: RomEntry[],
+  sampleSourceAssets: Map<string, RomAsset>,
+  sampleTargetAssets: Map<string, RomAsset>,
+): SamplePlan {
+  const entriesWithSamples = entries.map((entry) => ({
+    ...entry,
+    sampleArchiveIds: getMatchingSampleIds(entry, sampleSourceAssets, sampleTargetAssets),
+  }));
+
+  return buildSamplePlan(selectedIds, entriesWithSamples, sampleSourceAssets, sampleTargetAssets);
+}
+
+function getMatchingSampleIds(
+  entry: RomEntry,
+  sampleSourceAssets: Map<string, RomAsset>,
+  sampleTargetAssets: Map<string, RomAsset>,
+) {
+  const ids = [entry.id, entry.cloneOf, entry.romOf].map((id) => id.toLowerCase()).filter(Boolean);
+  return ids.filter((id, index) => ids.indexOf(id) === index && (sampleSourceAssets.has(id) || sampleTargetAssets.has(id)));
+}
+
 export function buildCounterpartPlan(
   selectedIds: Iterable<string>,
   entries: RomEntry[],

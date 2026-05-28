@@ -64,6 +64,13 @@ export async function pickFbneoTargetDirectory() {
   });
 }
 
+export async function pickFbneoSampleTargetDirectory() {
+  return window.showDirectoryPicker?.({
+    id: 'fbneo-sample-target',
+    mode: 'readwrite',
+  });
+}
+
 export async function pickSampleSourceDirectory() {
   return window.showDirectoryPicker?.({
     id: 'sample-source',
@@ -301,9 +308,10 @@ export async function resolveSampleDirectory(
   }
 
   if (options.preferSamplesSubfolder || options.createSubfolder) {
-    const samplesDirectory = options.createSubfolder
-      ? await directory.getDirectoryHandle('samples', { create: true })
-      : await getChildDirectory(directory, 'samples');
+    const samplesDirectory =
+      options.createSubfolder
+        ? await directory.getDirectoryHandle('samples', { create: true })
+        : (await getChildDirectory(directory, 'samples')) ?? (await findRomSubfolder(directory, 'samples'))?.directory;
 
     if (samplesDirectory) {
       return {
@@ -409,6 +417,7 @@ export async function loadHandles(): Promise<SourceHandles> {
   const [
     fullDir,
     fbneoFullDir,
+    fbneoSampleTargetDir,
     fbneoTargetDir,
     xmlFile,
     targetDir,
@@ -418,6 +427,7 @@ export async function loadHandles(): Promise<SourceHandles> {
   ] = await Promise.all([
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fullDir')),
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fbneoFullDir')),
+    runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fbneoSampleTargetDir')),
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fbneoTargetDir')),
     runStoreRequest<FileSystemFileHandle | null>(db, 'readonly', (store) => store.get('xmlFile')),
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('targetDir')),
@@ -430,6 +440,7 @@ export async function loadHandles(): Promise<SourceHandles> {
   return {
     fullDir: fullDir ?? null,
     fbneoFullDir: fbneoFullDir ?? null,
+    fbneoSampleTargetDir: fbneoSampleTargetDir ?? null,
     fbneoTargetDir: fbneoTargetDir ?? null,
     xmlFile: xmlFile ?? null,
     targetDir: targetDir ?? null,
