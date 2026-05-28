@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
   Check,
@@ -303,7 +303,6 @@ export function App() {
   const [sampleTargetDirectory, setSampleTargetDirectory] = useState<FileSystemDirectoryHandle | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [view, setView] = useState<ViewFilter>('missing');
   const [region, setRegion] = useState('all');
   const [sortKey, setSortKey] = useState<SortKey>('title');
@@ -455,14 +454,6 @@ export function App() {
       isActive = false;
     };
   }, []);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedQuery(query);
-    }, SEARCH_DEBOUNCE_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [query]);
 
   const activeSetOption = SET_OPTIONS.find((option) => option.key === activeSet) ?? SET_OPTIONS[0];
   const counterpartSetOption = activeSet === 'fbneo' ? SET_OPTIONS[0] : SET_OPTIONS[2];
@@ -703,7 +694,7 @@ export function App() {
   ]);
 
   const filteredEntries = useMemo(() => {
-    const terms = debouncedQuery
+    const terms = query
       .trim()
       .toLowerCase()
       .split(/\s+/)
@@ -757,7 +748,7 @@ export function App() {
     });
 
     return filtered.sort((left, right) => compareEntries(left, right, sortKey));
-  }, [debouncedQuery, entries, hideClones, hideSystemRoms, region, selectedIds, sortKey, view]);
+  }, [entries, hideClones, hideSystemRoms, query, region, selectedIds, sortKey, view]);
 
   const canIndex =
     activeSet === 'mame'
@@ -1849,14 +1840,7 @@ export function App() {
 
       <section className="manager-panel">
         <div className="toolbar">
-          <label className="search-box">
-            <Search aria-hidden="true" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search title, file, maker, year"
-            />
-          </label>
+          <DebouncedSearchBox value={query} onChange={setQuery} />
 
           <div className="segmented" aria-label="View">
             {VIEW_OPTIONS.map((option) => (
@@ -2061,6 +2045,38 @@ export function App() {
         />
       </section>
     </main>
+  );
+}
+
+function DebouncedSearchBox({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [draftValue, setDraftValue] = useState(value);
+  const lastCommittedValue = useRef(value);
+
+  useEffect(() => {
+    if (value !== lastCommittedValue.current) {
+      lastCommittedValue.current = value;
+      setDraftValue(value);
+    }
+  }, [value]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      lastCommittedValue.current = draftValue;
+      onChange(draftValue);
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [draftValue, onChange]);
+
+  return (
+    <label className="search-box">
+      <Search aria-hidden="true" />
+      <input
+        value={draftValue}
+        onChange={(event) => setDraftValue(event.target.value)}
+        placeholder="Search title, file, maker, year"
+      />
+    </label>
   );
 }
 
