@@ -1,5 +1,7 @@
 export type SourceKey =
   | 'fullDir'
+  | 'fbneoFullDir'
+  | 'fbneoTargetDir'
   | 'xmlFile'
   | 'targetDir'
   | 'sampleSourceDir'
@@ -8,6 +10,8 @@ export type SourceKey =
 
 export type SourceHandles = {
   fullDir: FileSystemDirectoryHandle | null;
+  fbneoFullDir: FileSystemDirectoryHandle | null;
+  fbneoTargetDir: FileSystemDirectoryHandle | null;
   xmlFile: FileSystemFileHandle | null;
   targetDir: FileSystemDirectoryHandle | null;
   sampleSourceDir: FileSystemDirectoryHandle | null;
@@ -20,9 +24,11 @@ export type AssetKind = 'file' | 'directory';
 export type RomAsset = {
   baseName: string;
   extension: string;
+  folder?: string;
   handle: FileSystemFileHandle | FileSystemDirectoryHandle;
   kind: AssetKind;
   name: string;
+  relativePath?: string;
   size?: number;
   updated?: number;
 };
@@ -56,12 +62,29 @@ export type ParsedRom = {
 
 export type RomEntry = ParsedRom & {
   available: boolean;
+  counterpartAvailable: boolean;
+  counterpartAsset?: RomAsset;
+  counterpartAssetName: string;
+  counterpartInTarget: boolean;
+  counterpartTargetAsset?: RomAsset;
+  counterpartTargetAssetName: string;
   fullAsset?: RomAsset;
   fullAssetName: string;
   inTarget: boolean;
   targetAsset?: RomAsset;
   targetAssetName: string;
   parentTitle: string;
+};
+
+export type CounterpartDirection = 'primaryToCounterpart' | 'counterpartToPrimary';
+
+export type CounterpartPlanItem = {
+  direction: CounterpartDirection;
+  entry: RomEntry;
+  removeAsset?: RomAsset;
+  removeTarget?: FileSystemDirectoryHandle;
+  sourceAsset: RomAsset;
+  targetDirectory: FileSystemDirectoryHandle;
 };
 
 export type CopyPlanItem = {

@@ -1,4 +1,14 @@
-import type { CopyPlan, CopyPlanItem, MissingSample, ParsedRom, RomAsset, RomEntry, SamplePlan, SamplePlanItem } from './types';
+import type {
+  CopyPlan,
+  CopyPlanItem,
+  CounterpartPlanItem,
+  MissingSample,
+  ParsedRom,
+  RomAsset,
+  RomEntry,
+  SamplePlan,
+  SamplePlanItem,
+} from './types';
 
 const OPTIONAL_SOUNDTRACK_SAMPLE_IDS: Record<string, string> = {
   ddragon: 'ddragon',
@@ -13,18 +23,29 @@ export function enrichRomEntries(
   parsed: ParsedRom[],
   fullAssets: Map<string, RomAsset>,
   targetAssets: Map<string, RomAsset>,
+  counterpartAssets: Map<string, RomAsset> = new Map(),
+  counterpartTargetAssets: Map<string, RomAsset> = new Map(),
 ): RomEntry[] {
   const byId = new Map(parsed.map((entry) => [entry.id.toLowerCase(), entry]));
 
   return parsed.map((entry) => {
-    const fullAsset = fullAssets.get(entry.id.toLowerCase());
-    const targetAsset = targetAssets.get(entry.id.toLowerCase());
+    const key = entry.id.toLowerCase();
+    const fullAsset = fullAssets.get(key);
+    const targetAsset = targetAssets.get(key);
+    const counterpartAsset = counterpartAssets.get(key);
+    const counterpartTargetAsset = counterpartTargetAssets.get(key);
     const parentId = entry.cloneOf || entry.romOf;
     const parent = parentId ? byId.get(parentId.toLowerCase()) : undefined;
 
     return {
       ...entry,
       available: Boolean(fullAsset),
+      counterpartAvailable: Boolean(counterpartAsset),
+      counterpartAsset,
+      counterpartAssetName: counterpartAsset?.name || '',
+      counterpartInTarget: Boolean(counterpartTargetAsset),
+      counterpartTargetAsset,
+      counterpartTargetAssetName: counterpartTargetAsset?.name || '',
       fullAsset,
       fullAssetName: fullAsset?.name || '',
       inTarget: Boolean(targetAsset),
@@ -33,6 +54,99 @@ export function enrichRomEntries(
       parentTitle: parent?.title || '',
     };
   });
+}
+
+export function buildAssetBackedEntries(
+  sourceAssets: Map<string, RomAsset>,
+  targetAssets: Map<string, RomAsset>,
+  metadataEntries: ParsedRom[] = [],
+  fallbackMetadataEntries: ParsedRom[] = [],
+): ParsedRom[] {
+  const metadataById = new Map(metadataEntries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const fallbackMetadataById = new Map(fallbackMetadataEntries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const ids = new Set([...sourceAssets.keys(), ...targetAssets.keys()]);
+
+  return [...ids]
+    .map((id) => {
+      const asset = sourceAssets.get(id) ?? targetAssets.get(id);
+      const metadata = metadataById.get(id);
+      const fallbackMetadata = fallbackMetadataById.get(id);
+
+      if (metadata && fallbackMetadata && isWeakAssetTitle(metadata, id, asset)) {
+        return mergeFallbackMetadata(metadata, fallbackMetadata);
+      }
+
+      if (metadata) {
+        return metadata;
+      }
+
+      if (fallbackMetadata) {
+        return fallbackMetadata;
+      }
+
+      return createAssetEntry(id, asset);
+    })
+    .sort((left, right) => left.title.localeCompare(right.title));
+}
+
+function isWeakAssetTitle(entry: ParsedRom, id: string, asset?: RomAsset) {
+  const titleKey = normalizeMetadataTitle(entry.title);
+  return (
+    titleKey === normalizeMetadataTitle(id) ||
+    titleKey === normalizeMetadataTitle(asset?.baseName || '') ||
+    titleKey === normalizeMetadataTitle(asset?.name || '')
+  );
+}
+
+function mergeFallbackMetadata(entry: ParsedRom, fallback: ParsedRom): ParsedRom {
+  return {
+    ...entry,
+    title: fallback.title || entry.title,
+    region: entry.region === 'Unknown' ? fallback.region : entry.region,
+    year: entry.year || fallback.year,
+    manufacturer: entry.manufacturer || fallback.manufacturer,
+    players: entry.players || fallback.players,
+    buttons: entry.buttons || fallback.buttons,
+    controls: entry.controls || fallback.controls,
+    coins: entry.coins || fallback.coins,
+    genre: entry.genre || fallback.genre,
+    searchText: [entry.id, fallback.title, entry.title, entry.category, fallback.searchText].filter(Boolean).join(' ').toLowerCase(),
+  };
+}
+
+function normalizeMetadataTitle(value: string) {
+  return value.toLowerCase().replace(/\.zip$/i, '').replace(/[^a-z0-9]+/g, '');
+}
+
+function createAssetEntry(id: string, asset?: RomAsset): ParsedRom {
+  const title = asset?.baseName || id;
+
+  return {
+    id,
+    title,
+    region: 'Unknown',
+    year: '',
+    manufacturer: '',
+    players: '',
+    buttons: '',
+    controls: '',
+    coins: '',
+    genre: '',
+    category: '',
+    cloneOf: '',
+    romOf: '',
+    sampleOf: '',
+    sampleArchiveIds: [],
+    sampleNames: [],
+    driverName: '',
+    display: '',
+    driverStatus: '',
+    isBios: id === 'neogeo',
+    isRunnable: id !== 'neogeo',
+    romCount: asset ? 1 : 0,
+    romSize: asset?.size ?? 0,
+    searchText: [id, title, asset?.name].filter(Boolean).join(' ').toLowerCase(),
+  };
 }
 
 export function buildCopyPlan(
@@ -161,6 +275,59 @@ export function buildSamplePlan(
     missing,
     required,
   };
+}
+
+export function buildCounterpartPlan(
+  selectedIds: Iterable<string>,
+  entries: RomEntry[],
+  primaryTargetDirectory: FileSystemDirectoryHandle | null,
+  counterpartTargetDirectory: FileSystemDirectoryHandle | null,
+  removeSourceAfterCopy: boolean,
+): CounterpartPlanItem[] {
+  const byId = new Map(entries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const items: CounterpartPlanItem[] = [];
+  const seen = new Set<string>();
+
+  for (const id of selectedIds) {
+    const entry = byId.get(id.toLowerCase());
+    if (!entry) {
+      continue;
+    }
+
+    if (entry.inTarget && !entry.counterpartInTarget && entry.counterpartAsset && counterpartTargetDirectory) {
+      addItem({
+        direction: 'primaryToCounterpart',
+        entry,
+        removeAsset: removeSourceAfterCopy ? entry.targetAsset : undefined,
+        removeTarget: removeSourceAfterCopy ? primaryTargetDirectory ?? undefined : undefined,
+        sourceAsset: entry.counterpartAsset,
+        targetDirectory: counterpartTargetDirectory,
+      });
+    }
+
+    if (entry.counterpartInTarget && !entry.inTarget && entry.fullAsset && primaryTargetDirectory) {
+      addItem({
+        direction: 'counterpartToPrimary',
+        entry,
+        removeAsset: removeSourceAfterCopy ? entry.counterpartTargetAsset : undefined,
+        removeTarget: removeSourceAfterCopy ? counterpartTargetDirectory ?? undefined : undefined,
+        sourceAsset: entry.fullAsset,
+        targetDirectory: primaryTargetDirectory,
+      });
+    }
+  }
+
+  return items;
+
+  function addItem(item: CounterpartPlanItem) {
+    const key = `${item.direction}:${item.sourceAsset.name.toLowerCase()}`;
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    items.push(item);
+  }
 }
 
 export function buildSoundtrackPlan(

@@ -22,6 +22,13 @@ export type ResolvedAssetDirectory = {
   usedSubfolder: boolean;
 };
 
+export type ResolvedXmlFile = {
+  file: File;
+  handle: FileSystemFileHandle;
+  selectedName: string;
+  usedSubfolder: boolean;
+};
+
 const SOUNDTRACK_FOLDER_NAME = 'optional soundtrack samples';
 
 export const supportsFileSystemAccess =
@@ -36,9 +43,23 @@ export async function pickFullDirectory() {
   });
 }
 
+export async function pickFbneoFullDirectory() {
+  return window.showDirectoryPicker?.({
+    id: 'fbneo-full-romset',
+    mode: 'read',
+  });
+}
+
 export async function pickTargetDirectory() {
   return window.showDirectoryPicker?.({
     id: 'managed-romset',
+    mode: 'readwrite',
+  });
+}
+
+export async function pickFbneoTargetDirectory() {
+  return window.showDirectoryPicker?.({
+    id: 'fbneo-managed-romset',
     mode: 'readwrite',
   });
 }
@@ -82,6 +103,34 @@ export async function pickXmlFile() {
   return handles?.[0];
 }
 
+export async function resolveXmlFile(directory: FileSystemDirectoryHandle): Promise<ResolvedXmlFile | null> {
+  const direct = await findXmlInDirectory(directory);
+  if (direct) {
+    return {
+      ...direct,
+      selectedName: directory.name,
+      usedSubfolder: false,
+    };
+  }
+
+  for await (const [, handle] of directory.entries()) {
+    if (handle.kind !== 'directory') {
+      continue;
+    }
+
+    const nested = await findXmlInDirectory(handle);
+    if (nested) {
+      return {
+        ...nested,
+        selectedName: directory.name,
+        usedSubfolder: true,
+      };
+    }
+  }
+
+  return null;
+}
+
 export async function verifyPermission(
   handle: FileSystemHandle,
   mode: FileSystemPermissionMode = 'read',
@@ -98,11 +147,27 @@ export async function verifyPermission(
   return (await handle.requestPermission(options)) === 'granted';
 }
 
-export async function listRomAssets(directory: FileSystemDirectoryHandle) {
+export async function listRomAssets(
+  directory: FileSystemDirectoryHandle,
+  options: { includeSubdirectories?: boolean } = {},
+) {
   const assets = new Map<string, RomAsset>();
+  await addRomAssetsFromDirectory(directory, assets, options.includeSubdirectories ?? false, []);
+  return assets;
+}
 
+async function addRomAssetsFromDirectory(
+  directory: FileSystemDirectoryHandle,
+  assets: Map<string, RomAsset>,
+  includeSubdirectories: boolean,
+  pathParts: string[],
+) {
   for await (const [name, handle] of directory.entries()) {
-    const asset = await createAsset(name, handle);
+    if (handle.kind === 'directory' && includeSubdirectories) {
+      await addRomAssetsFromDirectory(handle, assets, includeSubdirectories, [...pathParts, name]);
+    }
+
+    const asset = await createAsset(name, handle, pathParts);
     if (!asset) {
       continue;
     }
@@ -113,8 +178,6 @@ export async function listRomAssets(directory: FileSystemDirectoryHandle) {
       assets.set(key, asset);
     }
   }
-
-  return assets;
 }
 
 export async function listSampleAssets(directory: FileSystemDirectoryHandle) {
@@ -140,6 +203,16 @@ export async function resolveRomDirectory(
   directory: FileSystemDirectoryHandle,
   options: { preferRomsSubfolder?: boolean } = {},
 ): Promise<ResolvedRomDirectory> {
+  if (directory.name.toLowerCase() === 'games') {
+    return {
+      assets: await listRomAssets(directory, { includeSubdirectories: true }),
+      directory,
+      effectiveName: directory.name,
+      selectedName: directory.name,
+      usedSubfolder: false,
+    };
+  }
+
   if (options.preferRomsSubfolder && directory.name.toLowerCase() !== 'roms') {
     const romsDirectory = await getChildDirectory(directory, 'roms');
     if (romsDirectory) {
@@ -153,6 +226,20 @@ export async function resolveRomDirectory(
           usedSubfolder: true,
         };
       }
+    }
+  }
+
+  const gamesDirectory = await findRomSubfolder(directory, 'games');
+  if (gamesDirectory) {
+    const gamesAssets = await listRomAssets(gamesDirectory.directory, { includeSubdirectories: true });
+    if (gamesAssets.size > 0) {
+      return {
+        assets: gamesAssets,
+        directory: gamesDirectory.directory,
+        effectiveName: gamesDirectory.directory.name,
+        selectedName: directory.name,
+        usedSubfolder: true,
+      };
     }
   }
 
@@ -174,6 +261,17 @@ export async function resolveRomDirectory(
       assets: await listRomAssets(romsDirectory),
       directory: romsDirectory,
       effectiveName: romsDirectory.name,
+      selectedName: directory.name,
+      usedSubfolder: true,
+    };
+  }
+
+  const nestedRomsDirectory = await findRomSubfolder(directory, 'roms');
+  if (nestedRomsDirectory) {
+    return {
+      assets: await listRomAssets(nestedRomsDirectory.directory),
+      directory: nestedRomsDirectory.directory,
+      effectiveName: nestedRomsDirectory.directory.name,
       selectedName: directory.name,
       usedSubfolder: true,
     };
@@ -308,8 +406,19 @@ export async function saveHandle(key: SourceKey, handle: FileSystemHandle) {
 
 export async function loadHandles(): Promise<SourceHandles> {
   const db = await openDb();
-  const [fullDir, xmlFile, targetDir, sampleSourceDir, sampleTargetDir, soundtrackSourceDir] = await Promise.all([
+  const [
+    fullDir,
+    fbneoFullDir,
+    fbneoTargetDir,
+    xmlFile,
+    targetDir,
+    sampleSourceDir,
+    sampleTargetDir,
+    soundtrackSourceDir,
+  ] = await Promise.all([
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fullDir')),
+    runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fbneoFullDir')),
+    runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('fbneoTargetDir')),
     runStoreRequest<FileSystemFileHandle | null>(db, 'readonly', (store) => store.get('xmlFile')),
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('targetDir')),
     runStoreRequest<FileSystemDirectoryHandle | null>(db, 'readonly', (store) => store.get('sampleSourceDir')),
@@ -320,6 +429,8 @@ export async function loadHandles(): Promise<SourceHandles> {
 
   return {
     fullDir: fullDir ?? null,
+    fbneoFullDir: fbneoFullDir ?? null,
+    fbneoTargetDir: fbneoTargetDir ?? null,
     xmlFile: xmlFile ?? null,
     targetDir: targetDir ?? null,
     sampleSourceDir: sampleSourceDir ?? null,
@@ -344,7 +455,11 @@ export function stripKnownExtension(name: string) {
 async function createAsset(
   name: string,
   handle: FileSystemFileHandle | FileSystemDirectoryHandle,
+  pathParts: string[] = [],
 ): Promise<RomAsset | null> {
+  const relativePath = [...pathParts, name].join('/');
+  const folder = pathParts[pathParts.length - 1] || '';
+
   if (handle.kind === 'directory') {
     if (!(await directoryContainsChd(handle))) {
       return null;
@@ -353,9 +468,11 @@ async function createAsset(
     return {
       baseName: name,
       extension: '',
+      folder,
       handle,
       kind: 'directory',
       name,
+      relativePath,
     };
   }
 
@@ -368,9 +485,11 @@ async function createAsset(
   return {
     baseName,
     extension,
+    folder,
     handle,
     kind: 'file',
     name,
+    relativePath,
     size: file.size,
     updated: file.lastModified,
   };
@@ -437,6 +556,41 @@ async function getChildDirectory(directory: FileSystemDirectoryHandle, name: str
   } catch {
     return null;
   }
+}
+
+async function findRomSubfolder(directory: FileSystemDirectoryHandle, name: string) {
+  const direct = await getChildDirectory(directory, name);
+  if (direct) {
+    return { directory: direct };
+  }
+
+  for await (const [, handle] of directory.entries()) {
+    if (handle.kind !== 'directory') {
+      continue;
+    }
+
+    const nested = await getChildDirectory(handle, name);
+    if (nested) {
+      return { directory: nested };
+    }
+  }
+
+  return null;
+}
+
+async function findXmlInDirectory(directory: FileSystemDirectoryHandle) {
+  for await (const [name, handle] of directory.entries()) {
+    if (handle.kind !== 'file' || !name.toLowerCase().endsWith('.xml')) {
+      continue;
+    }
+
+    return {
+      file: await handle.getFile(),
+      handle,
+    };
+  }
+
+  return null;
 }
 
 function compareAssetPriority(left: RomAsset, right: RomAsset) {

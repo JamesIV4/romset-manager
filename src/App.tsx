@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ArrowLeftRight,
   Check,
   CheckCheck,
   CircleAlert,
@@ -22,6 +23,8 @@ import {
   listSampleAssets,
   listRomAssets,
   loadHandles,
+  pickFbneoFullDirectory,
+  pickFbneoTargetDirectory,
   pickFullDirectory,
   pickSampleSourceDirectory,
   pickSampleTargetDirectory,
@@ -32,16 +35,27 @@ import {
   resolveRomDirectory,
   resolveSampleDirectory,
   resolveSoundtrackDirectory,
+  resolveXmlFile,
   saveHandle,
   supportsFileSystemAccess,
   verifyPermission,
 } from './lib/fileSystem';
-import { formatBytes, parseMameXml } from './lib/mameParser';
-import { buildCopyPlan, buildSamplePlan, buildSoundtrackPlan, enrichRomEntries, getRegionOptions, getScreenscraperUrl } from './lib/romData';
-import type { CopyPlan, ParsedRom, RomAsset, RomEntry, SamplePlan, SourceHandles, SourceKey } from './lib/types';
+import { formatBytes, parseRomXml } from './lib/mameParser';
+import {
+  buildAssetBackedEntries,
+  buildCopyPlan,
+  buildCounterpartPlan,
+  buildSamplePlan,
+  buildSoundtrackPlan,
+  enrichRomEntries,
+  getRegionOptions,
+  getScreenscraperUrl,
+} from './lib/romData';
+import type { CopyPlan, CounterpartPlanItem, ParsedRom, RomAsset, RomEntry, SamplePlan, SourceHandles, SourceKey } from './lib/types';
 
-type ViewFilter = 'missing' | 'inSet' | 'all' | 'selected' | 'unavailable';
+type ViewFilter = 'missing' | 'inSet' | 'shared' | 'counterpart' | 'all' | 'selected' | 'unavailable';
 type SortKey = 'title' | 'region' | 'year' | 'manufacturer';
+type ManagedSetKey = 'mame' | 'fbneo';
 
 type CopyProgress = {
   current: number;
@@ -60,7 +74,14 @@ type SourceStatus = {
   selectedName?: string;
 };
 
+const SET_OPTIONS: Array<{ key: ManagedSetKey; label: string; shortLabel: string }> = [
+  { key: 'mame', label: 'MAME 2003-Plus', shortLabel: 'MAME' },
+  { key: 'fbneo', label: 'FBNeo', shortLabel: 'FBNeo' },
+];
+
 const EMPTY_HANDLES: SourceHandles = {
+  fbneoFullDir: null,
+  fbneoTargetDir: null,
   fullDir: null,
   sampleSourceDir: null,
   sampleTargetDir: null,
@@ -75,6 +96,7 @@ const SOURCE_CONFIG: Array<{
   detail: string;
   suggestedPath: string;
   icon: typeof FolderOpen;
+  sets: ManagedSetKey[];
 }> = [
   {
     key: 'fullDir',
@@ -82,13 +104,31 @@ const SOURCE_CONFIG: Array<{
     detail: 'Source ROMs',
     suggestedPath: 'D:\\Downloads\\mame2003-plus',
     icon: Database,
+    sets: ['mame'],
+  },
+  {
+    key: 'fbneoFullDir',
+    label: 'FBNeo set',
+    detail: 'Counterpart source ROMs',
+    suggestedPath: 'D:\\Downloads\\fbneo-1.0.0.3-full-non-merged',
+    icon: Database,
+    sets: ['fbneo'],
+  },
+  {
+    key: 'fbneoTargetDir',
+    label: 'FBNeo play set',
+    detail: 'Counterpart managed ROMs',
+    suggestedPath: '\\\\PACMAN\\share\\roms\\fbneo',
+    icon: FolderOpen,
+    sets: ['fbneo'],
   },
   {
     key: 'xmlFile',
     label: 'MAME XML',
-    detail: 'Game metadata',
+    detail: 'Optional game metadata',
     suggestedPath: 'D:\\Downloads\\mame2003-plus\\MAME 2003-Plus - 2018-12-31.xml',
     icon: FileCode2,
+    sets: ['mame'],
   },
   {
     key: 'targetDir',
@@ -96,6 +136,7 @@ const SOURCE_CONFIG: Array<{
     detail: 'Managed ROMs',
     suggestedPath: '\\\\PACMAN\\share\\roms\\mame\\mame2003plus',
     icon: FolderOpen,
+    sets: ['mame'],
   },
   {
     key: 'sampleSourceDir',
@@ -103,6 +144,7 @@ const SOURCE_CONFIG: Array<{
     detail: 'Optional audio samples',
     suggestedPath: 'D:\\Downloads\\mame2003-plus\\samples',
     icon: PackageOpen,
+    sets: ['mame'],
   },
   {
     key: 'sampleTargetDir',
@@ -110,6 +152,7 @@ const SOURCE_CONFIG: Array<{
     detail: 'Optional device sample destination',
     suggestedPath: '\\\\PACMAN\\share\\bios\\mame2003-plus\\samples',
     icon: PackageOpen,
+    sets: ['mame'],
   },
   {
     key: 'soundtrackSourceDir',
@@ -117,24 +160,35 @@ const SOURCE_CONFIG: Array<{
     detail: 'Optional soundtrack samples',
     suggestedPath: 'D:\\Downloads\\mame2003-plus\\optional soundtrack samples',
     icon: PackageOpen,
+    sets: ['mame'],
   },
 ];
 
 const VIEW_OPTIONS: Array<{ key: ViewFilter; label: string }> = [
   { key: 'missing', label: 'Missing' },
   { key: 'inSet', label: 'In set' },
+  { key: 'shared', label: 'Shared' },
+  { key: 'counterpart', label: 'Counterpart' },
   { key: 'selected', label: 'Selected' },
   { key: 'unavailable', label: 'No source' },
   { key: 'all', label: 'All' },
 ];
 
 const EMPTY_SOURCE_STATUS: Record<SourceKey, SourceStatus> = {
+  fbneoFullDir: {
+    detail: 'Choose the FBNeo full set folder, its set folder, or its games folder.',
+    state: 'empty',
+  },
+  fbneoTargetDir: {
+    detail: 'Choose the FBNeo playing-set folder.',
+    state: 'empty',
+  },
   fullDir: {
     detail: 'Choose the full set folder or its roms subfolder.',
     state: 'empty',
   },
   xmlFile: {
-    detail: 'Choose the MAME XML metadata file.',
+    detail: 'Optional. The app auto-detects XML in the full set folder when possible.',
     state: 'empty',
   },
   targetDir: {
@@ -156,8 +210,12 @@ const EMPTY_SOURCE_STATUS: Record<SourceKey, SourceStatus> = {
 };
 
 export function App() {
+  const [activeSet, setActiveSet] = useState<ManagedSetKey>('mame');
   const [handles, setHandles] = useState<SourceHandles>(EMPTY_HANDLES);
-  const [parsedEntries, setParsedEntries] = useState<ParsedRom[]>([]);
+  const [mameEntries, setMameEntries] = useState<ParsedRom[]>([]);
+  const [fbneoEntries, setFbneoEntries] = useState<ParsedRom[]>([]);
+  const [fbneoAssets, setFbneoAssets] = useState<Map<string, RomAsset>>(new Map());
+  const [fbneoTargetAssets, setFbneoTargetAssets] = useState<Map<string, RomAsset>>(new Map());
   const [fullAssets, setFullAssets] = useState<Map<string, RomAsset>>(new Map());
   const [targetAssets, setTargetAssets] = useState<Map<string, RomAsset>>(new Map());
   const [sampleSourceAssets, setSampleSourceAssets] = useState<Map<string, RomAsset>>(new Map());
@@ -174,7 +232,9 @@ export function App() {
   const [includeDependencies, setIncludeDependencies] = useState(true);
   const [includeSamples, setIncludeSamples] = useState(true);
   const [includeSoundtracks, setIncludeSoundtracks] = useState(false);
+  const [removeOriginalAfterCounterpartCopy, setRemoveOriginalAfterCounterpartCopy] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
+  const [counterpartProgress, setCounterpartProgress] = useState<CopyProgress | null>(null);
   const [copyProgress, setCopyProgress] = useState<CopyProgress | null>(null);
   const [removeProgress, setRemoveProgress] = useState<CopyProgress | null>(null);
   const [sampleFixProgress, setSampleFixProgress] = useState<CopyProgress | null>(null);
@@ -207,6 +267,20 @@ export function App() {
                 state: 'ready',
               }
             : current.fullDir,
+          fbneoFullDir: storedHandles.fbneoFullDir
+            ? {
+                detail: 'Saved FBNeo source restored. Scan may ask for permission again.',
+                selectedName: storedHandles.fbneoFullDir.name,
+                state: 'ready',
+              }
+            : current.fbneoFullDir,
+          fbneoTargetDir: storedHandles.fbneoTargetDir
+            ? {
+                detail: 'Saved FBNeo playing set restored. Scan may ask for permission again.',
+                selectedName: storedHandles.fbneoTargetDir.name,
+                state: 'ready',
+              }
+            : current.fbneoTargetDir,
           xmlFile: storedHandles.xmlFile
             ? {
                 detail: 'Saved XML restored. Scan may ask for permission again.',
@@ -244,10 +318,13 @@ export function App() {
             : current.soundtrackSourceDir,
         }));
         const hasAnyStoredHandle = Object.values(storedHandles).some(Boolean);
-        const hasAllStoredHandles = Boolean(storedHandles.fullDir && storedHandles.xmlFile && storedHandles.targetDir);
-        if (hasAllStoredHandles) {
-          setMessage('Saved sources restored. Indexing automatically...');
-          setAutoScanPending(true);
+        const hasAllMameHandles = Boolean(storedHandles.fullDir && storedHandles.targetDir);
+        const hasAllFbneoHandles = Boolean(storedHandles.fbneoFullDir && storedHandles.fbneoTargetDir);
+        if (!hasAllMameHandles && hasAllFbneoHandles) {
+          setActiveSet('fbneo');
+        }
+        if (hasAllMameHandles || hasAllFbneoHandles) {
+          setMessage('Saved sources restored. Click Scan to grant access.');
         } else if (hasAnyStoredHandle) {
           setMessage('Saved sources restored.');
         }
@@ -261,19 +338,49 @@ export function App() {
     };
   }, []);
 
+  const activeSetOption = SET_OPTIONS.find((option) => option.key === activeSet) ?? SET_OPTIONS[0];
+  const counterpartSetOption = SET_OPTIONS.find((option) => option.key !== activeSet) ?? SET_OPTIONS[1];
+  const visibleSources = useMemo(
+    () =>
+      SOURCE_CONFIG.filter(
+        (source) =>
+          source.sets.includes(activeSet) &&
+          (source.key === 'fullDir' ||
+            source.key === 'targetDir' ||
+            source.key === 'fbneoFullDir' ||
+            source.key === 'fbneoTargetDir'),
+      ),
+    [activeSet],
+  );
+  const activeParsedEntries = useMemo(
+    () =>
+      activeSet === 'mame'
+        ? buildAssetBackedEntries(fullAssets, targetAssets, mameEntries, fbneoEntries)
+        : buildAssetBackedEntries(fbneoAssets, fbneoTargetAssets, fbneoEntries, mameEntries),
+    [activeSet, fbneoAssets, fbneoEntries, fbneoTargetAssets, fullAssets, mameEntries, targetAssets],
+  );
+  const activeFullAssets = activeSet === 'mame' ? fullAssets : fbneoAssets;
+  const activeTargetAssets = activeSet === 'mame' ? targetAssets : fbneoTargetAssets;
+  const counterpartFullAssets = activeSet === 'mame' ? fbneoAssets : fullAssets;
+  const counterpartTargetAssets = activeSet === 'mame' ? fbneoTargetAssets : targetAssets;
+  const activeTargetDir = activeSet === 'mame' ? handles.targetDir : handles.fbneoTargetDir;
+  const counterpartTargetDir = activeSet === 'mame' ? handles.fbneoTargetDir : handles.targetDir;
+  const activeTargetSourceKey: SourceKey = activeSet === 'mame' ? 'targetDir' : 'fbneoTargetDir';
+  const counterpartTargetSourceKey: SourceKey = activeSet === 'mame' ? 'fbneoTargetDir' : 'targetDir';
+
   const entries = useMemo(
-    () => enrichRomEntries(parsedEntries, fullAssets, targetAssets),
-    [fullAssets, parsedEntries, targetAssets],
+    () => enrichRomEntries(activeParsedEntries, activeFullAssets, activeTargetAssets, counterpartFullAssets, counterpartTargetAssets),
+    [activeFullAssets, activeParsedEntries, activeTargetAssets, counterpartFullAssets, counterpartTargetAssets],
   );
 
   const selectedPlan = useMemo(
-    () => buildCopyPlan(selectedIds, entries, targetAssets, includeDependencies),
-    [entries, includeDependencies, selectedIds, targetAssets],
+    () => buildCopyPlan(selectedIds, entries, activeTargetAssets, includeDependencies),
+    [activeTargetAssets, entries, includeDependencies, selectedIds],
   );
 
   const selectedSamplePlan = useMemo<SamplePlan>(
     () =>
-      includeSamples
+      activeSet === 'mame' && includeSamples
         ? buildSamplePlan(selectedIds, entries, sampleSourceAssets, sampleTargetAssets)
         : {
             alreadyPresent: [],
@@ -281,12 +388,12 @@ export function App() {
             missing: [],
             required: [],
           },
-    [entries, includeSamples, sampleSourceAssets, sampleTargetAssets, selectedIds],
+    [activeSet, entries, includeSamples, sampleSourceAssets, sampleTargetAssets, selectedIds],
   );
 
   const selectedSoundtrackPlan = useMemo<SamplePlan>(
     () =>
-      includeSoundtracks
+      activeSet === 'mame' && includeSoundtracks
         ? buildSoundtrackPlan(selectedIds, entries, soundtrackSourceAssets, sampleTargetAssets)
         : {
             alreadyPresent: [],
@@ -294,18 +401,32 @@ export function App() {
             missing: [],
             required: [],
           },
-    [entries, includeSoundtracks, sampleTargetAssets, selectedIds, soundtrackSourceAssets],
+    [activeSet, entries, includeSoundtracks, sampleTargetAssets, selectedIds, soundtrackSourceAssets],
+  );
+
+  const selectedCounterpartPlan = useMemo(
+    () =>
+      buildCounterpartPlan(
+        selectedIds,
+        entries,
+        activeTargetDir,
+        counterpartTargetDir,
+        removeOriginalAfterCounterpartCopy,
+      ),
+    [activeTargetDir, counterpartTargetDir, entries, removeOriginalAfterCounterpartCopy, selectedIds],
   );
 
   const playSetSamplePlan = useMemo<SamplePlan>(
     () =>
-      buildSamplePlan(
-        entries.filter((entry) => entry.inTarget).map((entry) => entry.id),
-        entries,
-        sampleSourceAssets,
-        sampleTargetAssets,
-      ),
-    [entries, sampleSourceAssets, sampleTargetAssets],
+      activeSet === 'mame'
+        ? buildSamplePlan(
+            entries.filter((entry) => entry.inTarget).map((entry) => entry.id),
+            entries,
+            sampleSourceAssets,
+            sampleTargetAssets,
+          )
+        : emptySamplePlan(),
+    [activeSet, entries, sampleSourceAssets, sampleTargetAssets],
   );
 
   const selectedRemoveItems = useMemo(() => {
@@ -332,8 +453,11 @@ export function App() {
   const regions = useMemo(() => getRegionOptions(entries), [entries]);
 
   const stats = useMemo(() => {
-    const matchedFullAssets = entries.filter((entry) => entry.available).length;
+    const matchedActiveAssets = entries.filter((entry) => entry.available).length;
     const matchedTargetAssets = entries.filter((entry) => entry.inTarget).length;
+    const matchedCounterpartAssets = entries.filter((entry) => entry.counterpartAvailable).length;
+    const matchedCounterpartTargetAssets = entries.filter((entry) => entry.counterpartInTarget).length;
+    const sharedPlayable = entries.filter((entry) => entry.isRunnable && entry.available && entry.counterpartAvailable).length;
     const playableEntries = entries.filter((entry) => entry.isRunnable);
     const missingPlayable = playableEntries.filter((entry) => entry.available && !entry.inTarget).length;
 
@@ -341,9 +465,12 @@ export function App() {
       total: entries.length,
       playable: playableEntries.length,
       inSet: matchedTargetAssets,
+      counterpartInSet: matchedCounterpartTargetAssets,
+      sharedPlayable,
       missingPlayable,
       selected: selectedIds.size,
       copyable: selectedPlan.items.length,
+      counterpartCopyable: selectedCounterpartPlan.length,
       sampleCopyable: selectedSamplePlan.items.length,
       sampleNeeded: selectedSamplePlan.required.length,
       sampleGaps: playSetSamplePlan.items.length + playSetSamplePlan.missing.length,
@@ -351,13 +478,17 @@ export function App() {
       missingPlaySetSampleSources: playSetSamplePlan.missing.length,
       soundtrackCopyable: selectedSoundtrackPlan.items.length,
       removable: selectedRemoveItems.length,
-      fullUnmatched: Math.max(0, fullAssets.size - matchedFullAssets),
-      targetUnmatched: Math.max(0, targetAssets.size - matchedTargetAssets),
+      fullUnmatched: Math.max(0, activeFullAssets.size - matchedActiveAssets),
+      counterpartUnmatched: Math.max(0, counterpartFullAssets.size - matchedCounterpartAssets),
+      targetUnmatched: Math.max(0, activeTargetAssets.size - matchedTargetAssets),
     };
   }, [
+    activeFullAssets.size,
+    activeTargetAssets.size,
+    counterpartFullAssets.size,
     entries,
-    fullAssets.size,
     selectedIds.size,
+    selectedCounterpartPlan.length,
     selectedPlan.items.length,
     playSetSamplePlan.items.length,
     playSetSamplePlan.missing.length,
@@ -365,7 +496,6 @@ export function App() {
     selectedSamplePlan.items.length,
     selectedSamplePlan.required.length,
     selectedSoundtrackPlan.items.length,
-    targetAssets.size,
   ]);
 
   const filteredEntries = useMemo(() => {
@@ -400,6 +530,17 @@ export function App() {
         return entry.inTarget;
       }
 
+      if (view === 'shared') {
+        return entry.available && entry.counterpartAvailable;
+      }
+
+      if (view === 'counterpart') {
+        return (
+          (entry.inTarget && !entry.counterpartInTarget && entry.counterpartAvailable) ||
+          (entry.counterpartInTarget && !entry.inTarget && entry.available)
+        );
+      }
+
       if (view === 'selected') {
         return selectedIds.has(entry.id);
       }
@@ -414,15 +555,33 @@ export function App() {
     return filtered.sort((left, right) => compareEntries(left, right, sortKey));
   }, [entries, hideClones, hideSystemRoms, query, region, selectedIds, sortKey, view]);
 
-  const canIndex = Boolean(handles.fullDir && handles.xmlFile && handles.targetDir);
-  const isBusy = isIndexing || Boolean(copyProgress) || Boolean(removeProgress) || Boolean(sampleFixProgress);
+  const canIndex =
+    activeSet === 'mame'
+      ? Boolean(handles.fullDir && handles.targetDir)
+      : Boolean(handles.fbneoFullDir && handles.fbneoTargetDir);
+  const isBusy =
+    isIndexing || Boolean(copyProgress) || Boolean(counterpartProgress) || Boolean(removeProgress) || Boolean(sampleFixProgress);
   const copyWorkCount = selectedPlan.items.length + selectedSamplePlan.items.length + selectedSoundtrackPlan.items.length;
+  const counterpartWorkCount = selectedCounterpartPlan.length;
   const copySelectableCount =
     copyWorkCount ||
     (includeSamples ? selectedSamplePlan.required.length : 0) ||
     (includeSoundtracks ? selectedSoundtrackPlan.required.length : 0);
 
   async function syncSampleHandle(key: SourceKey, handle: FileSystemHandle) {
+    if (key === 'fbneoFullDir') {
+      const source = await resolveRomDirectory(handle as FileSystemDirectoryHandle, {
+        preferRomsSubfolder: true,
+      });
+      setFbneoAssets(source.assets);
+      return;
+    }
+
+    if (key === 'fbneoTargetDir') {
+      setFbneoTargetAssets(await listRomAssets(handle as FileSystemDirectoryHandle));
+      return;
+    }
+
     if (key === 'sampleSourceDir') {
       const source = await resolveSampleDirectory(handle as FileSystemDirectoryHandle, {
         preferSamplesSubfolder: true,
@@ -456,8 +615,12 @@ export function App() {
 
       if (key === 'fullDir') {
         handle = await pickFullDirectory();
+      } else if (key === 'fbneoFullDir') {
+        handle = await pickFbneoFullDirectory();
       } else if (key === 'targetDir') {
         handle = await pickTargetDirectory();
+      } else if (key === 'fbneoTargetDir') {
+        handle = await pickFbneoTargetDirectory();
       } else if (key === 'sampleSourceDir') {
         handle = await pickSampleSourceDirectory();
       } else if (key === 'sampleTargetDir') {
@@ -519,14 +682,18 @@ export function App() {
   }, []);
 
   const indexSources = useCallback(async (options: { auto?: boolean } = {}) => {
-    if (!handles.fullDir || !handles.xmlFile || !handles.targetDir) {
-      setError('Choose all three sources first.');
+    if (activeSet === 'mame' && (!handles.fullDir || !handles.targetDir)) {
+      setError('Choose the MAME full set and playing-set folder first.');
       return;
     }
 
-    const fullDir = handles.fullDir;
-    const xmlHandle = handles.xmlFile;
-    const targetDir = handles.targetDir;
+    if (activeSet === 'fbneo' && (!handles.fbneoFullDir || !handles.fbneoTargetDir)) {
+      setError('Choose the FBNeo full set and FBNeo playing-set folder first.');
+      return;
+    }
+
+    const fullDir = handles.fullDir!;
+    const targetDir = handles.targetDir!;
 
     try {
       setIsIndexing(true);
@@ -534,24 +701,113 @@ export function App() {
       setMessage(options.auto ? 'Indexing saved sources...' : 'Indexing ROM sources...');
       setLastPlan(null);
 
-      const [fullAllowed, xmlAllowed, targetAllowed] = await Promise.all([
-        verifyPermission(fullDir, 'read'),
-        verifyPermission(xmlHandle, 'read'),
-        verifyPermission(targetDir, 'readwrite'),
-      ]);
+      if (activeSet === 'fbneo') {
+        const fbneoFullAllowed = await verifyPermission(handles.fbneoFullDir!, 'read');
+        if (!fbneoFullAllowed) {
+          throw new Error('The browser did not receive read permission for the FBNeo full set.');
+        }
 
-      if (!fullAllowed || !xmlAllowed || !targetAllowed) {
-        throw new Error('The browser did not receive permission for every source.');
+        const fbneoTargetAllowed = await verifyPermission(handles.fbneoTargetDir!, 'readwrite');
+        if (!fbneoTargetAllowed) {
+          throw new Error('The browser did not receive permission for the FBNeo sources.');
+        }
+
+        const [fbneoSource, nextFbneoTargetAssets] = await Promise.all([
+          resolveRomDirectory(handles.fbneoFullDir!, { preferRomsSubfolder: true }),
+          listRomAssets(handles.fbneoTargetDir!),
+        ]);
+        if (fbneoSource.assets.size === 0) {
+          setSourceStatuses((current) => ({
+            ...current,
+            fbneoFullDir: {
+              detail: 'No FBNeo ROM archives found. Choose the set folder, games folder, or a folder containing games.',
+              selectedName: handles.fbneoFullDir?.name,
+              state: 'warning',
+            },
+          }));
+          throw new Error('No FBNeo ROM archives were found in the source.');
+        }
+        const fbneoXmlFile = await resolveXmlFile(handles.fbneoFullDir!);
+        if (!fbneoXmlFile) {
+          setSourceStatuses((current) => ({
+            ...current,
+            fbneoFullDir: {
+              detail: 'No XML metadata file found in the FBNeo full set folder.',
+              selectedName: handles.fbneoFullDir?.name,
+              state: 'warning',
+            },
+          }));
+          throw new Error('No FBNeo XML metadata file was found in the full set folder.');
+        }
+        const nextEntries = parseRomXml(await fbneoXmlFile.file.text(), fbneoSource.assets);
+
+        setFbneoAssets(fbneoSource.assets);
+        setFbneoTargetAssets(nextFbneoTargetAssets);
+        setFbneoEntries(nextEntries);
+        setSourceStatuses((current) => ({
+          ...current,
+          fbneoFullDir: {
+            detail: `${formatDirectoryStatus(fbneoSource.assets.size, fbneoSource.usedSubfolder, 'FBNeo set')} ${fbneoXmlFile.file.name} loaded.`,
+            selectedName: fbneoSource.selectedName,
+            state: 'ready',
+          },
+          fbneoTargetDir: {
+            detail:
+              nextFbneoTargetAssets.size > 0
+                ? `${nextFbneoTargetAssets.size.toLocaleString()} ROM item${nextFbneoTargetAssets.size === 1 ? '' : 's'} found in the FBNeo playing set.`
+                : 'No ROMs found yet. This FBNeo playing-set folder can still receive copied ROMs.',
+            selectedName: handles.fbneoTargetDir?.name,
+            state: nextFbneoTargetAssets.size > 0 ? 'ready' : 'warning',
+          },
+        }));
+        setSelectedIds(new Set());
+        setLastIndexed(new Date());
+        setMessage(
+          `${fbneoSource.assets.size.toLocaleString()} FBNeo ROM items indexed with ${nextEntries.length.toLocaleString()} metadata entries.`,
+        );
+        return;
       }
 
-      const xmlFile = await xmlHandle.getFile();
-      const [xmlText, fullSource, nextTargetAssets, sampleSource, sampleTarget, soundtrackSource] = await Promise.all([
-        xmlFile.text(),
+      const fullAllowed = await verifyPermission(fullDir, 'read');
+      if (!fullAllowed) {
+        throw new Error('The browser did not receive read permission for the MAME full set.');
+      }
+
+      const targetAllowed = await verifyPermission(targetDir, 'readwrite');
+      if (!targetAllowed) {
+        throw new Error('The browser did not receive write permission for the MAME playing set.');
+      }
+
+      const [autoXmlFile, fullSource, nextTargetAssets] = await Promise.all([
+        resolveXmlFile(fullDir),
         resolveRomDirectory(fullDir, { preferRomsSubfolder: true }),
         listRomAssets(targetDir),
-        resolveSampleSource(handles.sampleSourceDir, fullDir),
-        resolveSampleTarget(handles.sampleTargetDir),
-        resolveSoundtrackSource(handles.soundtrackSourceDir, fullDir),
+      ]);
+      const [sampleSource, sampleTarget, soundtrackSource] = await Promise.all([
+        resolveSampleSource(handles.sampleSourceDir, fullDir).catch(() => ({
+          assets: new Map<string, RomAsset>(),
+          available: false,
+          directory: fullDir,
+          effectiveName: fullDir.name,
+          selectedName: fullDir.name,
+          usedSubfolder: false,
+        })),
+        resolveSampleTarget(handles.sampleTargetDir).catch(() => ({
+          assets: new Map<string, RomAsset>(),
+          available: false,
+          directory: null,
+          effectiveName: '',
+          selectedName: '',
+          usedSubfolder: false,
+        })),
+        resolveSoundtrackSource(handles.soundtrackSourceDir, fullDir).catch(() => ({
+          assets: new Map<string, RomAsset>(),
+          available: false,
+          directory: fullDir,
+          effectiveName: fullDir.name,
+          selectedName: fullDir.name,
+          usedSubfolder: false,
+        })),
       ]);
       const nextFullAssets = fullSource.assets;
       if (nextFullAssets.size === 0) {
@@ -566,9 +822,21 @@ export function App() {
         throw new Error('No ROM archives were found in the full set source.');
       }
 
-      const nextEntries = parseMameXml(xmlText);
+      const metadataFile = autoXmlFile?.file ?? null;
+      if (!metadataFile) {
+        setSourceStatuses((current) => ({
+          ...current,
+          fullDir: {
+            detail: 'No XML metadata file found in the MAME full set folder.',
+            selectedName: fullDir.name,
+            state: 'warning',
+          },
+        }));
+        throw new Error('No MAME XML metadata file was found in the full set folder.');
+      }
+      const nextEntries = parseRomXml(await metadataFile.text(), nextFullAssets);
 
-      setParsedEntries(nextEntries);
+      setMameEntries(nextEntries);
       setFullAssets(nextFullAssets);
       setTargetAssets(nextTargetAssets);
       setSampleSourceAssets(sampleSource.assets);
@@ -590,9 +858,11 @@ export function App() {
           selectedName: targetDir.name,
           state: nextTargetAssets.size > 0 ? 'ready' : 'warning',
         },
+        fbneoFullDir: current.fbneoFullDir,
+        fbneoTargetDir: current.fbneoTargetDir,
         xmlFile: {
-          detail: `${xmlFile.name} loaded.`,
-          selectedName: xmlFile.name,
+          detail: `${metadataFile.name} loaded automatically.`,
+          selectedName: metadataFile?.name,
           state: 'ready',
         },
         sampleSourceDir: sampleSource.available
@@ -619,7 +889,9 @@ export function App() {
       }));
       setSelectedIds(new Set());
       setLastIndexed(new Date());
-      setMessage(`${nextEntries.length.toLocaleString()} games indexed.`);
+      setMessage(
+        `${nextFullAssets.size.toLocaleString()} MAME ROM items indexed with ${nextEntries.length.toLocaleString()} metadata entries.`,
+      );
     } catch (caught) {
       const detail = getErrorMessage(caught);
       setError(
@@ -631,6 +903,9 @@ export function App() {
       setIsIndexing(false);
     }
   }, [
+    activeSet,
+    handles.fbneoFullDir,
+    handles.fbneoTargetDir,
     handles.fullDir,
     handles.sampleSourceDir,
     handles.sampleTargetDir,
@@ -648,15 +923,21 @@ export function App() {
     void indexSources({ auto: true });
   }, [autoScanPending, canIndex, indexSources, isBusy, lastIndexed]);
 
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setLastPlan(null);
+  }, [activeSet]);
+
   const copySelected = useCallback(async () => {
-    if (!handles.targetDir) {
+    if (!activeTargetDir) {
       setError('Choose a playing set folder first.');
       return;
     }
 
-    const plan = buildCopyPlan(selectedIds, entries, targetAssets, includeDependencies);
-    const possibleSamplePlan = buildSamplePlan(selectedIds, entries, sampleSourceAssets, sampleTargetAssets);
-    let shouldCopySamples = includeSamples;
+    const plan = buildCopyPlan(selectedIds, entries, activeTargetAssets, includeDependencies);
+    const possibleSamplePlan =
+      activeSet === 'mame' ? buildSamplePlan(selectedIds, entries, sampleSourceAssets, sampleTargetAssets) : emptySamplePlan();
+    let shouldCopySamples = activeSet === 'mame' && includeSamples;
     if (!shouldCopySamples && possibleSamplePlan.required.length > 0) {
       shouldCopySamples = window.confirm(
         `Selected ROMs require ${possibleSamplePlan.required.length.toLocaleString()} sample pack${possibleSamplePlan.required.length === 1 ? '' : 's'}. Copy samples too?`,
@@ -671,7 +952,7 @@ export function App() {
           missing: [],
           required: [],
         };
-    const soundtrackPlan = includeSoundtracks
+    const soundtrackPlan = activeSet === 'mame' && includeSoundtracks
       ? buildSoundtrackPlan(selectedIds, entries, soundtrackSourceAssets, sampleTargetAssets)
       : {
           alreadyPresent: [],
@@ -715,7 +996,7 @@ export function App() {
       return;
     }
 
-    const targetDir = handles.targetDir;
+    const targetDir = activeTargetDir;
     const samplesDir = sampleTargetDirectory;
 
     try {
@@ -765,12 +1046,16 @@ export function App() {
         listRomAssets(targetDir),
         samplesDir ? listSampleAssets(samplesDir) : Promise.resolve(sampleTargetAssets),
       ]);
-      setTargetAssets(refreshedTargetAssets);
+      if (activeSet === 'mame') {
+        setTargetAssets(refreshedTargetAssets);
+      } else {
+        setFbneoTargetAssets(refreshedTargetAssets);
+      }
       setSampleTargetAssets(refreshedSampleAssets);
       setSourceStatuses((current) => ({
         ...current,
-        targetDir: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? '' : 's'} found in the playing set.`,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? '' : 's'} found in the ${activeSetOption.label} playing set.`,
           selectedName: targetDir.name,
           state: 'ready',
         },
@@ -796,15 +1081,23 @@ export function App() {
       const romText = `${plan.items.length.toLocaleString()} ROM item${plan.items.length === 1 ? '' : 's'}`;
       const sampleText = `${copySamplePlan.items.length.toLocaleString()} sample pack${copySamplePlan.items.length === 1 ? '' : 's'}`;
       const soundtrackText = `${copySoundtrackPlan.items.length.toLocaleString()} OST pack${copySoundtrackPlan.items.length === 1 ? '' : 's'}`;
-      setMessage([`${romText}, ${sampleText}, and ${soundtrackText} copied.`, ...optionalNotes].join(' '));
+      const copiedText =
+        activeSet === 'mame'
+          ? `${romText}, ${sampleText}, and ${soundtrackText} copied.`
+          : `${romText} copied.`;
+      setMessage([copiedText, ...optionalNotes].join(' '));
     } catch (caught) {
       setError(getErrorMessage(caught));
     } finally {
       setCopyProgress(null);
     }
   }, [
+    activeSet,
+    activeSetOption.label,
+    activeTargetAssets,
+    activeTargetDir,
+    activeTargetSourceKey,
     entries,
-    handles.targetDir,
     includeDependencies,
     includeSamples,
     includeSoundtracks,
@@ -813,7 +1106,133 @@ export function App() {
     sampleTargetDirectory,
     selectedIds,
     soundtrackSourceAssets,
-    targetAssets,
+  ]);
+
+  const copyCounterparts = useCallback(async () => {
+    if (!activeTargetDir || !counterpartTargetDir) {
+      setError('Choose both playing-set folders before copying counterparts.');
+      return;
+    }
+
+    const plan = buildCounterpartPlan(
+      selectedIds,
+      entries,
+      activeTargetDir,
+      counterpartTargetDir,
+      removeOriginalAfterCounterpartCopy,
+    );
+    if (plan.length === 0) {
+      setMessage('No selected ROMs need a counterpart copy.');
+      return;
+    }
+
+    const directionLabels = new Set(plan.map((item) => item.direction));
+    const confirmed =
+      !removeOriginalAfterCounterpartCopy ||
+      window.confirm(
+        `Copy ${plan.length.toLocaleString()} counterpart ROM item${plan.length === 1 ? '' : 's'}, verify the copied files are present, then remove the original version from the other playing set?`,
+      );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setError('');
+      const [activeAllowed, counterpartAllowed] = await Promise.all([
+        verifyPermission(activeTargetDir, 'readwrite'),
+        verifyPermission(counterpartTargetDir, 'readwrite'),
+      ]);
+      if (!activeAllowed || !counterpartAllowed) {
+        throw new Error('The browser did not receive write permission for both playing sets.');
+      }
+
+      for (let index = 0; index < plan.length; index += 1) {
+        const item = plan[index];
+        setCounterpartProgress({
+          current: index + 1,
+          total: plan.length,
+          label: item.sourceAsset.name,
+        });
+        await copyAssetToDirectory(item.sourceAsset, item.targetDirectory);
+      }
+
+      const [afterCopyActiveAssets, afterCopyCounterpartAssets] = await Promise.all([
+        listRomAssets(activeTargetDir),
+        listRomAssets(counterpartTargetDir),
+      ]);
+      const removals = removeOriginalAfterCounterpartCopy
+        ? getVerifiedCounterpartRemovals(plan, afterCopyActiveAssets, afterCopyCounterpartAssets)
+        : [];
+
+      for (let index = 0; index < removals.length; index += 1) {
+        const item = removals[index];
+        setCounterpartProgress({
+          current: index + 1,
+          total: removals.length,
+          label: item.asset.name,
+        });
+        await removeAssetFromDirectory(item.asset, item.target);
+      }
+
+      const [refreshedActiveAssets, refreshedCounterpartTargetAssets] =
+        removals.length > 0
+          ? await Promise.all([listRomAssets(activeTargetDir), listRomAssets(counterpartTargetDir)])
+          : [afterCopyActiveAssets, afterCopyCounterpartAssets];
+
+      if (activeSet === 'mame') {
+        setTargetAssets(refreshedActiveAssets);
+        setFbneoTargetAssets(refreshedCounterpartTargetAssets);
+      } else {
+        setFbneoTargetAssets(refreshedActiveAssets);
+        setTargetAssets(refreshedCounterpartTargetAssets);
+      }
+      setSourceStatuses((current) => ({
+        ...current,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedActiveAssets.size.toLocaleString()} ROM item${refreshedActiveAssets.size === 1 ? '' : 's'} found in the ${activeSetOption.label} playing set.`,
+          selectedName: activeTargetDir.name,
+          state: 'ready',
+        },
+        [counterpartTargetSourceKey]: {
+          detail: `${refreshedCounterpartTargetAssets.size.toLocaleString()} ROM item${refreshedCounterpartTargetAssets.size === 1 ? '' : 's'} found in the ${counterpartSetOption.label} playing set.`,
+          selectedName: counterpartTargetDir.name,
+          state: 'ready',
+        },
+      }));
+      setSelectedIds((current) => {
+        const completed = new Set(plan.map((item) => item.entry.id));
+        return new Set([...current].filter((id) => !completed.has(id)));
+      });
+
+      const directions =
+        directionLabels.size === 2
+          ? 'both directions'
+          : directionLabels.has('primaryToCounterpart')
+            ? `to ${counterpartSetOption.label}`
+            : `to ${activeSetOption.label}`;
+      setMessage(
+        `${plan.length.toLocaleString()} counterpart ROM item${plan.length === 1 ? '' : 's'} copied ${directions}. ${
+          removals.length > 0
+            ? `${removals.length.toLocaleString()} verified original${removals.length === 1 ? '' : 's'} removed.`
+            : 'Original versions were kept.'
+        }`,
+      );
+    } catch (caught) {
+      setError(getErrorMessage(caught));
+    } finally {
+      setCounterpartProgress(null);
+    }
+  }, [
+    activeSet,
+    activeSetOption.label,
+    activeTargetDir,
+    activeTargetSourceKey,
+    counterpartSetOption.label,
+    counterpartTargetDir,
+    counterpartTargetSourceKey,
+    entries,
+    removeOriginalAfterCounterpartCopy,
+    selectedIds,
   ]);
 
   const fixPlaySetSamples = useCallback(async () => {
@@ -873,7 +1292,7 @@ export function App() {
   }, [playSetSamplePlan, sampleTargetDirectory]);
 
   const removeSelected = useCallback(async () => {
-    if (!handles.targetDir) {
+    if (!activeTargetDir) {
       setError('Choose a playing set folder first.');
       return;
     }
@@ -892,7 +1311,7 @@ export function App() {
 
     try {
       setError('');
-      const targetAllowed = await verifyPermission(handles.targetDir, 'readwrite');
+      const targetAllowed = await verifyPermission(activeTargetDir, 'readwrite');
       if (!targetAllowed) {
         throw new Error('The browser did not receive write permission for the playing set.');
       }
@@ -904,16 +1323,20 @@ export function App() {
           total: selectedRemoveItems.length,
           label: item.asset.name,
         });
-        await removeAssetFromDirectory(item.asset, handles.targetDir);
+        await removeAssetFromDirectory(item.asset, activeTargetDir);
       }
 
-      const refreshedTargetAssets = await listRomAssets(handles.targetDir);
-      setTargetAssets(refreshedTargetAssets);
+      const refreshedTargetAssets = await listRomAssets(activeTargetDir);
+      if (activeSet === 'mame') {
+        setTargetAssets(refreshedTargetAssets);
+      } else {
+        setFbneoTargetAssets(refreshedTargetAssets);
+      }
       setSourceStatuses((current) => ({
         ...current,
-        targetDir: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? '' : 's'} found in the playing set.`,
-          selectedName: handles.targetDir?.name,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? '' : 's'} found in the ${activeSetOption.label} playing set.`,
+          selectedName: activeTargetDir.name,
           state: 'ready',
         },
       }));
@@ -927,7 +1350,7 @@ export function App() {
     } finally {
       setRemoveProgress(null);
     }
-  }, [handles.targetDir, selectedRemoveItems]);
+  }, [activeSet, activeSetOption.label, activeTargetDir, activeTargetSourceKey, selectedRemoveItems]);
 
   function toggleSelected(id: string) {
     setSelectedIds((current) => {
@@ -977,25 +1400,37 @@ export function App() {
           <div className="brand-mark">RM</div>
           <div>
             <h1>ROM Set Manager</h1>
-            <p>MAME 2003-Plus</p>
+            <p>{activeSetOption.label}</p>
           </div>
         </div>
 
         <div className="topbar-actions">
+          <label className="set-picker">
+            <span>Set</span>
+            <select value={activeSet} onChange={(event) => setActiveSet(event.target.value as ManagedSetKey)} disabled={isBusy}>
+              {SET_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button className="button secondary" type="button" onClick={() => indexSources()} disabled={!canIndex || isBusy}>
             {isIndexing ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
             <span>Scan</span>
           </button>
-          <button
-            className="button secondary"
-            type="button"
-            onClick={fixPlaySetSamples}
-            disabled={playSetSamplePlan.items.length === 0 || isBusy}
-            title={`${playSetSamplePlan.items.length.toLocaleString()} missing sample pack${playSetSamplePlan.items.length === 1 ? '' : 's'} can be copied; ${playSetSamplePlan.missing.length.toLocaleString()} missing from source`}
-          >
-            {sampleFixProgress ? <Loader2 className="spin" aria-hidden="true" /> : <PackageOpen aria-hidden="true" />}
-            <span>Fix Samples {playSetSamplePlan.items.length > 0 ? playSetSamplePlan.items.length.toLocaleString() : ''}</span>
-          </button>
+          {activeSet === 'mame' ? (
+            <button
+              className="button secondary"
+              type="button"
+              onClick={fixPlaySetSamples}
+              disabled={playSetSamplePlan.items.length === 0 || isBusy}
+              title={`${playSetSamplePlan.items.length.toLocaleString()} missing sample pack${playSetSamplePlan.items.length === 1 ? '' : 's'} can be copied; ${playSetSamplePlan.missing.length.toLocaleString()} missing from source`}
+            >
+              {sampleFixProgress ? <Loader2 className="spin" aria-hidden="true" /> : <PackageOpen aria-hidden="true" />}
+              <span>Fix Samples {playSetSamplePlan.items.length > 0 ? playSetSamplePlan.items.length.toLocaleString() : ''}</span>
+            </button>
+          ) : null}
           <button
             className="button primary"
             type="button"
@@ -1005,6 +1440,16 @@ export function App() {
           >
             {copyProgress ? <Loader2 className="spin" aria-hidden="true" /> : <Copy aria-hidden="true" />}
             <span>Copy {copyWorkCount > 0 ? copyWorkCount.toLocaleString() : ''}</span>
+          </button>
+          <button
+            className="button secondary"
+            type="button"
+            onClick={copyCounterparts}
+            disabled={counterpartWorkCount === 0 || isBusy}
+            title={`${counterpartWorkCount.toLocaleString()} counterpart ROM item${counterpartWorkCount === 1 ? '' : 's'} ready`}
+          >
+            {counterpartProgress ? <Loader2 className="spin" aria-hidden="true" /> : <ArrowLeftRight aria-hidden="true" />}
+            <span>Swap {counterpartWorkCount > 0 ? counterpartWorkCount.toLocaleString() : ''}</span>
           </button>
           <button
             className="button danger"
@@ -1020,7 +1465,7 @@ export function App() {
       </header>
 
       <section className="source-strip" aria-label="Sources">
-        {SOURCE_CONFIG.map((source) => (
+        {visibleSources.map((source) => (
           <SourceTile
             key={source.key}
             config={source}
@@ -1045,14 +1490,18 @@ export function App() {
         <Metric label="Indexed" value={stats.total} />
         <Metric label="Playable" value={stats.playable} />
         <Metric label="In set" value={stats.inSet} tone="good" />
+        <Metric label={`${counterpartSetOption.shortLabel} set`} value={stats.counterpartInSet} tone="good" />
+        <Metric label="Shared" value={stats.sharedPlayable} />
         <Metric label="Missing" value={stats.missingPlayable} tone="warn" />
         <Metric label="Selected" value={stats.selected} />
         <Metric label="Copyable" value={stats.copyable} tone="action" />
+        <Metric label="Counterpart" value={stats.counterpartCopyable} tone="action" />
         <Metric label="Samples" value={stats.sampleCopyable} tone="action" />
         <Metric label="Sample gaps" value={stats.sampleGaps} tone={stats.sampleGaps > 0 ? 'warn' : 'good'} />
         <Metric label="OST" value={stats.soundtrackCopyable} tone="action" />
         <Metric label="Removable" value={stats.removable} tone="danger" />
         <Metric label="Full extras" value={stats.fullUnmatched} />
+        <Metric label={`${counterpartSetOption.shortLabel} extras`} value={stats.counterpartUnmatched} />
         <Metric label="Set extras" value={stats.targetUnmatched} />
       </section>
 
@@ -1110,13 +1559,25 @@ export function App() {
             <input type="checkbox" checked={includeDependencies} onChange={(event) => setIncludeDependencies(event.target.checked)} />
             <span>Copy parents</span>
           </label>
+          {activeSet === 'mame' ? (
+            <>
+              <label className="check-option">
+                <input type="checkbox" checked={includeSamples} onChange={(event) => setIncludeSamples(event.target.checked)} />
+                <span>Copy samples</span>
+              </label>
+              <label className="check-option">
+                <input type="checkbox" checked={includeSoundtracks} onChange={(event) => setIncludeSoundtracks(event.target.checked)} />
+                <span>Copy OST</span>
+              </label>
+            </>
+          ) : null}
           <label className="check-option">
-            <input type="checkbox" checked={includeSamples} onChange={(event) => setIncludeSamples(event.target.checked)} />
-            <span>Copy samples</span>
-          </label>
-          <label className="check-option">
-            <input type="checkbox" checked={includeSoundtracks} onChange={(event) => setIncludeSoundtracks(event.target.checked)} />
-            <span>Copy OST</span>
+            <input
+              type="checkbox"
+              checked={removeOriginalAfterCounterpartCopy}
+              onChange={(event) => setRemoveOriginalAfterCounterpartCopy(event.target.checked)}
+            />
+            <span>Remove after swap</span>
           </label>
           <label className="check-option">
             <input type="checkbox" checked={hideClones} onChange={(event) => setHideClones(event.target.checked)} />
@@ -1148,6 +1609,18 @@ export function App() {
               <span>{copyProgress.label}</span>
             </div>
             <progress value={copyProgress.current} max={copyProgress.total} />
+          </div>
+        ) : null}
+
+        {counterpartProgress ? (
+          <div className="copy-progress">
+            <div>
+              <strong>
+                Swapping {counterpartProgress.current} of {counterpartProgress.total}
+              </strong>
+              <span>{counterpartProgress.label}</span>
+            </div>
+            <progress value={counterpartProgress.current} max={counterpartProgress.total} />
           </div>
         ) : null}
 
@@ -1196,6 +1669,17 @@ export function App() {
           </div>
         ) : null}
 
+        {selectedCounterpartPlan.length > 0 ? (
+          <div className="plan-note">
+            <ArrowLeftRight aria-hidden="true" />
+            <span>
+              {selectedCounterpartPlan.length.toLocaleString()} counterpart ROM item
+              {selectedCounterpartPlan.length === 1 ? '' : 's'} ready
+              {removeOriginalAfterCounterpartCopy ? ' - originals will be removed only after the copied version is verified' : ''}
+            </span>
+          </div>
+        ) : null}
+
         {includeSamples && selectedSamplePlan.required.length > 0 ? (
           <div className="plan-note">
             <PackageOpen aria-hidden="true" />
@@ -1224,7 +1708,13 @@ export function App() {
           </div>
         ) : null}
 
-        <RomTable entries={filteredEntries} selectedIds={selectedIds} onToggle={toggleSelected} />
+        <RomTable
+          activeLabel={activeSetOption.shortLabel}
+          counterpartLabel={counterpartSetOption.shortLabel}
+          entries={filteredEntries}
+          selectedIds={selectedIds}
+          onToggle={toggleSelected}
+        />
       </section>
     </main>
   );
@@ -1298,10 +1788,14 @@ function Metric({ label, value, tone = 'neutral' }: { label: string; value: numb
 }
 
 function RomTable({
+  activeLabel,
+  counterpartLabel,
   entries,
   selectedIds,
   onToggle,
 }: {
+  activeLabel: string;
+  counterpartLabel: string;
   entries: RomEntry[];
   selectedIds: Set<string>;
   onToggle: (id: string) => void;
@@ -1314,7 +1808,8 @@ function RomTable({
             <th className="select-col">Pick</th>
             <th className="status-col">Set</th>
             <th>Name</th>
-            <th className="rom-col">ROM</th>
+            <th className="rom-col">{activeLabel}</th>
+            <th className="fbneo-col">{counterpartLabel}</th>
             <th className="region-col">Region</th>
             <th className="players-col">Players</th>
             <th className="year-col">Year</th>
@@ -1326,7 +1821,7 @@ function RomTable({
         <tbody>
           {entries.length === 0 ? (
             <tr>
-              <td colSpan={10} className="empty-cell">
+              <td colSpan={11} className="empty-cell">
                 No ROMs match the current view.
               </td>
             </tr>
@@ -1360,7 +1855,7 @@ function RomRow({ entry, checked, onToggle }: { entry: RomEntry; checked: boolea
           type="checkbox"
           checked={checked}
           onChange={onToggle}
-          disabled={!entry.inTarget && !entry.available}
+          disabled={!entry.inTarget && !entry.available && !entry.counterpartInTarget && !entry.counterpartAvailable}
           aria-label={`Select ${entry.title}`}
         />
       </td>
@@ -1374,6 +1869,10 @@ function RomRow({ entry, checked, onToggle }: { entry: RomEntry; checked: boolea
       <td className="rom-col">
         <code className="rom-code">{entry.fullAssetName || `${entry.id}.zip`}</code>
         {entry.targetAssetName && <div className="game-detail">{entry.targetAssetName}</div>}
+      </td>
+      <td className="fbneo-col">
+        <code className="rom-code">{entry.counterpartAssetName || '-'}</code>
+        {entry.counterpartTargetAssetName && <div className="game-detail">{entry.counterpartTargetAssetName}</div>}
       </td>
       <td className="region-col">{entry.region}</td>
       <td className="players-col">{entry.players || '-'}</td>
@@ -1400,6 +1899,40 @@ function compareEntries(left: RomEntry, right: RomEntry, sortKey: SortKey) {
   return left[sortKey].localeCompare(right[sortKey]) || left.title.localeCompare(right.title);
 }
 
+function getVerifiedCounterpartRemovals(
+  plan: CounterpartPlanItem[],
+  primaryAssets: Map<string, RomAsset>,
+  counterpartAssets: Map<string, RomAsset>,
+) {
+  const removals: Array<{ asset: RomAsset; target: FileSystemDirectoryHandle }> = [];
+  const seen = new Set<string>();
+
+  for (const item of plan) {
+    if (!item.removeAsset || !item.removeTarget) {
+      continue;
+    }
+
+    const copiedAssetKey = item.sourceAsset.baseName.toLowerCase();
+    const copied =
+      item.direction === 'primaryToCounterpart'
+        ? counterpartAssets.has(copiedAssetKey)
+        : primaryAssets.has(copiedAssetKey);
+    if (!copied) {
+      continue;
+    }
+
+    const removeKey = `${item.removeTarget.name}:${item.removeAsset.name}`.toLowerCase();
+    if (seen.has(removeKey)) {
+      continue;
+    }
+
+    seen.add(removeKey);
+    removals.push({ asset: item.removeAsset, target: item.removeTarget });
+  }
+
+  return removals;
+}
+
 function sourceLabel(key: SourceKey) {
   return SOURCE_CONFIG.find((source) => source.key === key)?.label || 'Source';
 }
@@ -1423,7 +1956,7 @@ async function inspectSource(key: SourceKey, handle: FileSystemHandle): Promise<
     };
   }
 
-  const mode: FileSystemPermissionMode = key === 'targetDir' || key === 'sampleTargetDir' ? 'readwrite' : 'read';
+  const mode: FileSystemPermissionMode = key === 'targetDir' || key === 'fbneoTargetDir' || key === 'sampleTargetDir' ? 'readwrite' : 'read';
   const allowed = await verifyPermission(handle, mode);
   if (!allowed) {
     return {
@@ -1440,6 +1973,18 @@ async function inspectSource(key: SourceKey, handle: FileSystemHandle): Promise<
         source.assets.size > 0
           ? formatDirectoryStatus(source.assets.size, source.usedSubfolder, 'full set')
           : 'No ROM archives found. Choose the full set folder or its roms subfolder.',
+      selectedName: source.selectedName,
+      state: source.assets.size > 0 ? 'ready' : 'warning',
+    };
+  }
+
+  if (key === 'fbneoFullDir') {
+    const source = await resolveRomDirectory(handle as FileSystemDirectoryHandle, { preferRomsSubfolder: true });
+    return {
+      detail:
+        source.assets.size > 0
+          ? formatDirectoryStatus(source.assets.size, source.usedSubfolder, 'FBNeo set')
+          : 'No FBNeo ROM archives found. Choose the set folder, games folder, or a folder containing games.',
       selectedName: source.selectedName,
       state: source.assets.size > 0 ? 'ready' : 'warning',
     };
@@ -1480,11 +2025,12 @@ async function inspectSource(key: SourceKey, handle: FileSystemHandle): Promise<
   }
 
   const assets = await listRomAssets(handle as FileSystemDirectoryHandle);
+  const targetLabel = key === 'fbneoTargetDir' ? 'FBNeo playing set' : 'playing set';
   return {
     detail:
       assets.size > 0
-        ? `${assets.size.toLocaleString()} ROM item${assets.size === 1 ? '' : 's'} found in the playing set.`
-        : 'No ROMs found yet. This playing-set folder can still receive copied ROMs.',
+        ? `${assets.size.toLocaleString()} ROM item${assets.size === 1 ? '' : 's'} found in the ${targetLabel}.`
+        : `No ROMs found yet. This ${targetLabel} folder can still receive copied ROMs.`,
     selectedName: handle.name,
     state: assets.size > 0 ? 'ready' : 'warning',
   };
@@ -1492,7 +2038,7 @@ async function inspectSource(key: SourceKey, handle: FileSystemHandle): Promise<
 
 function formatDirectoryStatus(count: number, usedSubfolder: boolean, label: string) {
   const countText = `${count.toLocaleString()} ROM item${count === 1 ? '' : 's'} found`;
-  return usedSubfolder ? `${countText} in the roms subfolder.` : `${countText} in the selected ${label} folder.`;
+  return usedSubfolder ? `${countText} in a detected ROM subfolder.` : `${countText} in the selected ${label} folder.`;
 }
 
 async function resolveSampleSource(

@@ -106,6 +106,27 @@ code {
   gap: 10px;
 }
 
+.set-picker {
+  display: grid;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.set-picker span {
+  color: #6e665c;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.set-picker select {
+  height: 38px;
+  border: 1px solid #d6d0c4;
+  border-radius: 7px;
+  background: #fffefa;
+  color: #24211d;
+}
+
 .button,
 .icon-button {
   display: inline-flex;
@@ -619,6 +640,10 @@ tbody tr:hover {
 }
 
 .rom-col {
+  width: 128px;
+}
+
+.fbneo-col {
   width: 128px;
 }
 

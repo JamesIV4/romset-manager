@@ -1,4 +1,4 @@
-import type { ParsedRom } from './types';
+import type { ParsedRom, RomAsset } from './types';
 
 const REGION_MATCHERS = [
   { label: 'World', pattern: /\b(world|international)\b/i },
@@ -17,6 +17,10 @@ const REGION_MATCHERS = [
   { label: 'UK', pattern: /\b(uk|united kingdom|britain)\b/i },
 ];
 
+const ARCHIVE_TITLE_ALIASES: Record<string, string> = {
+  '2020bb': '2020 Super Baseball (set 1)',
+};
+
 export function parseMameXml(xmlText: string): ParsedRom[] {
   const document = new DOMParser().parseFromString(xmlText, 'application/xml');
   const parserError = document.querySelector('parsererror');
@@ -29,6 +33,15 @@ export function parseMameXml(xmlText: string): ParsedRom[] {
     .map(parseMachine)
     .filter((rom): rom is ParsedRom => Boolean(rom))
     .sort((left, right) => left.title.localeCompare(right.title));
+}
+
+export function parseRomXml(xmlText: string, fallbackAssets: Map<string, RomAsset> = new Map()): ParsedRom[] {
+  const mameEntries = parseMameXml(xmlText);
+  if (mameEntries.length > 0 || fallbackAssets.size === 0) {
+    return mameEntries;
+  }
+
+  return parseArchiveMetadataXml(xmlText, fallbackAssets);
 }
 
 export function formatBytes(bytes: number) {
@@ -129,6 +142,225 @@ function parseMachine(node: Element): ParsedRom | null {
       .join(' ')
       .toLowerCase(),
   };
+}
+
+function parseArchiveMetadataXml(xmlText: string, assets: Map<string, RomAsset>): ParsedRom[] {
+  const document = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const parserError = document.querySelector('parsererror');
+  if (parserError) {
+    throw new Error(parserError.textContent?.trim() || 'The XML file could not be parsed.');
+  }
+
+  const collectionTitle = cleanMetadata(text(document.documentElement, 'title'));
+  const descriptionHtml = text(document.documentElement, 'description');
+  const sections = descriptionHtml ? parseArchiveDescriptionSections(descriptionHtml) : new Map<string, string[]>();
+  const allTitles = [...sections.values()].flat();
+
+  return [...assets.entries()]
+    .map(([id, asset]) => {
+      const folderTitles = asset.folder ? sections.get(asset.folder.toLowerCase()) || [] : [];
+      const title = findArchiveTitle(id, folderTitles, true) || findArchiveTitle(id, allTitles, false) || formatIdTitle(asset.baseName);
+      return createMetadataBackedEntry(id, asset, title, collectionTitle, asset.folder || '');
+    })
+    .sort((left, right) => left.title.localeCompare(right.title));
+}
+
+function createMetadataBackedEntry(
+  id: string,
+  asset: RomAsset,
+  title: string,
+  collectionTitle: string,
+  folder: string,
+): ParsedRom {
+  return {
+    id,
+    title,
+    region: inferRegion(title),
+    year: '',
+    manufacturer: '',
+    players: '',
+    buttons: '',
+    controls: '',
+    coins: '',
+    genre: '',
+    category: [collectionTitle, folder].filter(Boolean).join(' / '),
+    cloneOf: '',
+    romOf: '',
+    sampleOf: '',
+    sampleArchiveIds: [],
+    sampleNames: [],
+    driverName: '',
+    display: '',
+    driverStatus: 'archive metadata',
+    isBios: id === 'neogeo',
+    isRunnable: id !== 'neogeo',
+    romCount: 1,
+    romSize: asset.size ?? 0,
+    searchText: [id, title, asset.name, asset.relativePath, collectionTitle, folder].filter(Boolean).join(' ').toLowerCase(),
+  };
+}
+
+function parseArchiveDescriptionSections(descriptionHtml: string) {
+  const htmlDocument = new DOMParser().parseFromString(descriptionHtml, 'text/html');
+  const sections = new Map<string, string[]>();
+  let currentFolder = '';
+  let inGameList = false;
+
+  for (const node of Array.from(htmlDocument.body.querySelectorAll('div, li'))) {
+    const value = cleanMetadata(node.textContent || '');
+    if (!value) {
+      continue;
+    }
+
+    if (/^game list$/i.test(value)) {
+      inGameList = true;
+      continue;
+    }
+
+    if (!inGameList) {
+      continue;
+    }
+
+    if (node.querySelector('div, li')) {
+      continue;
+    }
+
+    const folder = getArchiveSectionFolder(value);
+    if (folder) {
+      currentFolder = folder;
+      if (!sections.has(currentFolder)) {
+        sections.set(currentFolder, []);
+      }
+      continue;
+    }
+
+    if (!currentFolder || isArchiveHeading(value)) {
+      continue;
+    }
+
+    sections.get(currentFolder)!.push(cleanArchiveGameTitle(value));
+  }
+
+  return sections;
+}
+
+function findArchiveTitle(id: string, titles: string[], allowLooseMatch: boolean) {
+  const aliasedTitle = ARCHIVE_TITLE_ALIASES[id.toLowerCase()];
+  if (aliasedTitle && titles.some((title) => normalizeComparable(title) === normalizeComparable(aliasedTitle))) {
+    return aliasedTitle;
+  }
+
+  const normalizedId = normalizeComparable(id);
+  const exact = titles.find((title) => getTitleKeys(title).has(normalizedId));
+  if (exact) {
+    return exact;
+  }
+
+  const prefix = titles.find((title) => {
+    const titleKeys = getTitleKeys(title);
+    return [...titleKeys].some((titleKey) => normalizedId.length >= 3 && titleKey.startsWith(normalizedId));
+  });
+  if (prefix) {
+    return prefix;
+  }
+
+  const idConsonants = consonantKey(normalizedId);
+  const consonantMatch = titles.find((title) => {
+    return [...getTitleKeys(title)].some((titleKey) => {
+      const titleConsonants = consonantKey(titleKey);
+      return idConsonants.length >= 4 && titleConsonants.startsWith(idConsonants);
+    });
+  });
+  if (consonantMatch) {
+    return consonantMatch;
+  }
+
+  return allowLooseMatch
+    ? titles.find((title) => [...getTitleKeys(title)].some((titleKey) => isOrderedSubsequence(normalizedId, titleKey)))
+    : undefined;
+}
+
+function formatIdTitle(id: string) {
+  return id.replace(/[_-]+/g, ' ');
+}
+
+function isArchiveHeading(line: string) {
+  return /^(\*|about|install|game list|.+ folder|\d+\s+.+ games|samples are|all games|this set|most of|copy the|make sure|scape your|[\d\s]+total games|this is a|the games are|the only exception|there are a few|some of the later)/i.test(
+    line,
+  );
+}
+
+function getArchiveSectionFolder(line: string) {
+  const match = line.match(/\(([^)]+)\s+folder\)/i);
+  if (match) {
+    return match[1].trim().toLowerCase();
+  }
+
+  if (/additional a[cr]+cade games/i.test(line)) {
+    return 'fbneo';
+  }
+
+  return '';
+}
+
+function cleanArchiveGameTitle(value: string) {
+  return value.replace(/^\d{4}\s+/, '').replace(/\s+\*note.+$/i, '').trim();
+}
+
+function normalizeComparable(value: string) {
+  return expandNumberWords(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function expandNumberWords(value: string) {
+  return value
+    .replace(/\bthree\b/gi, '3')
+    .replace(/\btwo\b/gi, '2')
+    .replace(/\bfour\b/gi, '4')
+    .replace(/\bii\b/gi, '2')
+    .replace(/\biii\b/gi, '3')
+    .replace(/\biv\b/gi, '4');
+}
+
+function getTitleKeys(title: string) {
+  const words = getComparableWords(title);
+  const keys = new Set<string>([normalizeComparable(title)]);
+
+  if (words.length > 1) {
+    const firstWord = words[0]!;
+    keys.add(normalizeComparable([firstWord[0], ...words.slice(1)].join(' ')));
+    keys.add(normalizeComparable([firstWord, ...words.slice(1).map((word) => word[0])].join(' ')));
+    keys.add(normalizeComparable(words.map((word) => word[0]).join(' ')));
+  }
+
+  return keys;
+}
+
+function getComparableWords(value: string) {
+  return expandNumberWords(value)
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) || [];
+}
+
+function consonantKey(value: string) {
+  return value.replace(/[aeiou]/g, '');
+}
+
+function isOrderedSubsequence(needle: string, haystack: string) {
+  if (needle.length < 4 || haystack.length < needle.length) {
+    return false;
+  }
+
+  let index = 0;
+  for (const char of haystack) {
+    if (char === needle[index]) {
+      index += 1;
+      if (index === needle.length) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function text(node: Element, selector: string) {
