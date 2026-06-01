@@ -102,6 +102,15 @@ const SET_OPTIONS: Array<{
   { key: "fbneo", label: "FBNeo", shortLabel: "FBNeo" },
 ];
 
+const ROM_SOURCE_KEYS = new Set<SourceKey>([
+  "fullDir",
+  "mame287FullDir",
+  "fbneoFullDir",
+  "targetDir",
+  "mame287TargetDir",
+  "fbneoTargetDir",
+]);
+
 const SEARCH_DEBOUNCE_MS = 250;
 
 const EMPTY_HANDLES: SourceHandles = {
@@ -130,7 +139,7 @@ const SOURCE_CONFIG: Array<{
 }> = [
   {
     key: "fullDir",
-    label: "Full set",
+    label: "MAME 2003-Plus full set",
     detail: "Source ROMs",
     suggestedPath: "D:\\Downloads\\mame2003-plus",
     icon: Database,
@@ -138,7 +147,7 @@ const SOURCE_CONFIG: Array<{
   },
   {
     key: "mame287FullDir",
-    label: "Full set",
+    label: "MAME 0.287 full set",
     detail: "Source ROMs",
     suggestedPath: "D:\\Downloads\\mame 0.287 full rom set non-merged",
     icon: Database,
@@ -146,7 +155,7 @@ const SOURCE_CONFIG: Array<{
   },
   {
     key: "mame287TargetDir",
-    label: "Playing set",
+    label: "MAME 0.287 playing set",
     detail: "Managed ROMs",
     suggestedPath: "\\\\PACMAN\\share\\roms\\mame",
     icon: FolderOpen,
@@ -170,16 +179,16 @@ const SOURCE_CONFIG: Array<{
   },
   {
     key: "fbneoFullDir",
-    label: "FBNeo set",
-    detail: "Counterpart source ROMs",
+    label: "FBNeo full set",
+    detail: "Source ROMs",
     suggestedPath: "D:\\Downloads\\fbneo-1.0.0.3-full-non-merged",
     icon: Database,
     sets: ["fbneo"],
   },
   {
     key: "fbneoTargetDir",
-    label: "FBNeo play set",
-    detail: "Counterpart managed ROMs",
+    label: "FBNeo playing set",
+    detail: "Managed ROMs",
     suggestedPath: "\\\\PACMAN\\share\\roms\\fbneo",
     icon: FolderOpen,
     sets: ["fbneo"],
@@ -203,7 +212,7 @@ const SOURCE_CONFIG: Array<{
   },
   {
     key: "targetDir",
-    label: "Playing set",
+    label: "MAME 2003-Plus playing set",
     detail: "Managed ROMs",
     suggestedPath: "\\\\PACMAN\\share\\roms\\mame\\mame2003plus",
     icon: FolderOpen,
@@ -308,6 +317,8 @@ const EMPTY_SOURCE_STATUS: Record<SourceKey, SourceStatus> = {
 
 export function App() {
   const [activeSet, setActiveSet] = useState<ManagedSetKey>("mame");
+  const [counterpartSet, setCounterpartSet] =
+    useState<ManagedSetKey>("fbneo");
   const [handles, setHandles] = useState<SourceHandles>(EMPTY_HANDLES);
   const [mameEntries, setMameEntries] = useState<ParsedRom[]>([]);
   const [mame287Entries, setMame287Entries] = useState<ParsedRom[]>([]);
@@ -526,6 +537,7 @@ export function App() {
           hasAllFbneoHandles
         ) {
           setActiveSet("fbneo");
+          setCounterpartSet("mame");
         }
         if (hasAllMameHandles || hasAllMame287Handles || hasAllFbneoHandles) {
           setMessage("Saved sources restored. Click Scan to grant access.");
@@ -545,44 +557,9 @@ export function App() {
   const activeSetOption =
     SET_OPTIONS.find((option) => option.key === activeSet) ?? SET_OPTIONS[0];
   const counterpartSetOption =
-    activeSet === "fbneo" ? SET_OPTIONS[0] : SET_OPTIONS[2];
-  const activeIsFbneo = activeSet === "fbneo";
+    SET_OPTIONS.find((option) => option.key === counterpartSet) ??
+    SET_OPTIONS[2];
   const activeIsMame287 = activeSet === "mame287";
-  const activeParsedEntries = useMemo(
-    () =>
-      activeSet === "mame"
-        ? buildAssetBackedEntries(
-            fullAssets,
-            targetAssets,
-            mameEntries,
-            fbneoEntries,
-          )
-        : activeSet === "mame287"
-          ? buildAssetBackedEntries(
-              mame287Assets,
-              mame287TargetAssets,
-              mame287Entries,
-              [...mameEntries, ...fbneoEntries],
-            )
-          : buildAssetBackedEntries(
-              fbneoAssets,
-              fbneoTargetAssets,
-              fbneoEntries,
-              [...mameEntries, ...mame287Entries],
-            ),
-    [
-      activeSet,
-      fbneoAssets,
-      fbneoEntries,
-      fbneoTargetAssets,
-      fullAssets,
-      mame287Assets,
-      mame287Entries,
-      mame287TargetAssets,
-      mameEntries,
-      targetAssets,
-    ],
-  );
   const activeFullAssets =
     activeSet === "mame"
       ? fullAssets
@@ -595,28 +572,81 @@ export function App() {
       : activeIsMame287
         ? mame287TargetAssets
         : fbneoTargetAssets;
-  const counterpartFullAssets = activeIsFbneo ? fullAssets : fbneoAssets;
-  const counterpartTargetAssets = activeIsFbneo
-    ? targetAssets
-    : fbneoTargetAssets;
+  const activeMetadataEntries =
+    activeSet === "mame"
+      ? mameEntries
+      : activeIsMame287
+        ? mame287Entries
+        : fbneoEntries;
+  const counterpartFullAssets =
+    counterpartSet === "mame"
+      ? fullAssets
+      : counterpartSet === "mame287"
+        ? mame287Assets
+        : fbneoAssets;
+  const counterpartTargetAssets =
+    counterpartSet === "mame"
+      ? targetAssets
+      : counterpartSet === "mame287"
+        ? mame287TargetAssets
+        : fbneoTargetAssets;
+  const counterpartMetadataEntries =
+    counterpartSet === "mame"
+      ? mameEntries
+      : counterpartSet === "mame287"
+        ? mame287Entries
+        : fbneoEntries;
+  const activeParsedEntries = useMemo(
+    () =>
+      buildAssetBackedEntries(
+        activeFullAssets,
+        activeTargetAssets,
+        activeMetadataEntries,
+        counterpartMetadataEntries,
+      ),
+    [
+      activeFullAssets,
+      activeMetadataEntries,
+      activeTargetAssets,
+      counterpartMetadataEntries,
+    ],
+  );
   const activeTargetDir =
     activeSet === "mame"
       ? handles.targetDir
       : activeIsMame287
         ? handles.mame287TargetDir
         : handles.fbneoTargetDir;
-  const counterpartTargetDir = activeIsFbneo
-    ? handles.targetDir
-    : handles.fbneoTargetDir;
+  const counterpartTargetDir =
+    counterpartSet === "mame"
+      ? handles.targetDir
+      : counterpartSet === "mame287"
+        ? handles.mame287TargetDir
+        : handles.fbneoTargetDir;
+  const counterpartFullDir =
+    counterpartSet === "mame"
+      ? handles.fullDir
+      : counterpartSet === "mame287"
+        ? handles.mame287FullDir
+        : handles.fbneoFullDir;
   const activeTargetSourceKey: SourceKey =
     activeSet === "mame"
       ? "targetDir"
       : activeIsMame287
         ? "mame287TargetDir"
         : "fbneoTargetDir";
-  const counterpartTargetSourceKey: SourceKey = activeIsFbneo
-    ? "targetDir"
-    : "fbneoTargetDir";
+  const counterpartTargetSourceKey: SourceKey =
+    counterpartSet === "mame"
+      ? "targetDir"
+      : counterpartSet === "mame287"
+        ? "mame287TargetDir"
+        : "fbneoTargetDir";
+  const counterpartFullSourceKey: SourceKey =
+    counterpartSet === "mame"
+      ? "fullDir"
+      : counterpartSet === "mame287"
+        ? "mame287FullDir"
+        : "fbneoFullDir";
   const activeSampleSourceAssets =
     activeSet === "mame"
       ? sampleSourceAssets
@@ -799,11 +829,15 @@ export function App() {
 
   const visibleSources = useMemo(() => {
     return SOURCE_CONFIG.filter((source) => {
-      if (!source.sets.includes(activeSet)) {
+      const isActiveSource = source.sets.includes(activeSet);
+      const isCounterpartRomSource =
+        source.sets.includes(counterpartSet) && ROM_SOURCE_KEYS.has(source.key);
+      if (!isActiveSource && !isCounterpartRomSource) {
         return false;
       }
 
       if (
+        isActiveSource &&
         activeSet === "mame" &&
         (source.key === "sampleSourceDir" || source.key === "sampleTargetDir")
       ) {
@@ -811,6 +845,7 @@ export function App() {
       }
 
       if (
+        isActiveSource &&
         activeIsMame287 &&
         (source.key === "mame287SampleSourceDir" ||
           source.key === "mame287SampleTargetDir")
@@ -819,16 +854,11 @@ export function App() {
       }
 
       return (
-        source.key === "fullDir" ||
-        source.key === "targetDir" ||
-        source.key === "mame287FullDir" ||
-        source.key === "mame287TargetDir" ||
-        source.key === "fbneoFullDir" ||
-        source.key === "fbneoTargetDir" ||
-        source.key === "fbneoSampleTargetDir"
+        ROM_SOURCE_KEYS.has(source.key) ||
+        (isActiveSource && source.key === "fbneoSampleTargetDir")
       );
     });
-  }, [activeIsMame287, activeSet]);
+  }, [activeIsMame287, activeSet, counterpartSet]);
 
   const selectedRemoveItems = useMemo(() => {
     const items: RemoveItem[] = [];
@@ -1009,6 +1039,22 @@ export function App() {
     (includeSoundtracks ? selectedSoundtrackPlan.required.length : 0);
 
   async function syncSampleHandle(key: SourceKey, handle: FileSystemHandle) {
+    if (key === "fullDir") {
+      const source = await resolveRomDirectory(
+        handle as FileSystemDirectoryHandle,
+        {
+          preferRomsSubfolder: true,
+        },
+      );
+      setFullAssets(source.assets);
+      return;
+    }
+
+    if (key === "targetDir") {
+      setTargetAssets(await listRomAssets(handle as FileSystemDirectoryHandle));
+      return;
+    }
+
     if (key === "fbneoFullDir") {
       const source = await resolveRomDirectory(
         handle as FileSystemDirectoryHandle,
@@ -1251,6 +1297,7 @@ export function App() {
             : "Indexing ROM sources...",
         );
         setLastPlan(null);
+        await syncCounterpartRomSources();
 
         if (activeSet === "fbneo") {
           const fbneoFullAllowed = await verifyPermission(
@@ -1546,6 +1593,11 @@ export function App() {
     [
       activeIsMame287,
       activeSet,
+      counterpartFullDir,
+      counterpartFullSourceKey,
+      counterpartSet,
+      counterpartTargetDir,
+      counterpartTargetSourceKey,
       handles.fbneoFullDir,
       handles.fbneoSampleTargetDir,
       handles.fbneoTargetDir,
@@ -1574,7 +1626,7 @@ export function App() {
   useEffect(() => {
     setSelectedIds(new Set());
     setLastPlan(null);
-  }, [activeSet]);
+  }, [activeSet, counterpartSet]);
 
   const copySelected = useCallback(async () => {
     if (!activeTargetDir) {
@@ -1938,16 +1990,8 @@ export function App() {
             ])
           : [afterCopyActiveAssets, afterCopyCounterpartAssets];
 
-      if (activeSet === "mame") {
-        setTargetAssets(refreshedActiveAssets);
-        setFbneoTargetAssets(refreshedCounterpartTargetAssets);
-      } else if (activeIsMame287) {
-        setMame287TargetAssets(refreshedActiveAssets);
-        setFbneoTargetAssets(refreshedCounterpartTargetAssets);
-      } else {
-        setFbneoTargetAssets(refreshedActiveAssets);
-        setTargetAssets(refreshedCounterpartTargetAssets);
-      }
+      setManagedTargetAssets(activeSet, refreshedActiveAssets);
+      setManagedTargetAssets(counterpartSet, refreshedCounterpartTargetAssets);
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
@@ -1991,6 +2035,7 @@ export function App() {
     activeTargetDir,
     activeTargetSourceKey,
     counterpartSetOption.label,
+    counterpartSet,
     counterpartTargetDir,
     counterpartTargetSourceKey,
     entries,
@@ -2191,6 +2236,102 @@ export function App() {
     setLastPlan(null);
   }
 
+  function changeActiveSet(nextSet: ManagedSetKey) {
+    setCounterpartSet((current) => (current === nextSet ? activeSet : current));
+    setActiveSet(nextSet);
+  }
+
+  function setManagedTargetAssets(
+    set: ManagedSetKey,
+    assets: Map<string, RomAsset>,
+  ) {
+    if (set === "mame") {
+      setTargetAssets(assets);
+    } else if (set === "mame287") {
+      setMame287TargetAssets(assets);
+    } else {
+      setFbneoTargetAssets(assets);
+    }
+  }
+
+  function setManagedFullAssets(
+    set: ManagedSetKey,
+    assets: Map<string, RomAsset>,
+  ) {
+    if (set === "mame") {
+      setFullAssets(assets);
+    } else if (set === "mame287") {
+      setMame287Assets(assets);
+    } else {
+      setFbneoAssets(assets);
+    }
+  }
+
+  async function syncCounterpartRomSources() {
+    if (!counterpartFullDir || !counterpartTargetDir) {
+      return;
+    }
+
+    const [fullAllowed, targetAllowed] = await Promise.all([
+      verifyPermission(counterpartFullDir, "read"),
+      verifyPermission(counterpartTargetDir, "readwrite"),
+    ]);
+    if (!fullAllowed || !targetAllowed) {
+      setSourceStatuses((current) => ({
+        ...current,
+        [counterpartFullSourceKey]: {
+          detail: fullAllowed
+            ? current[counterpartFullSourceKey].detail
+            : `The browser did not grant read permission for the ${counterpartSetOption.label} full set.`,
+          selectedName: counterpartFullDir.name,
+          state: fullAllowed
+            ? current[counterpartFullSourceKey].state
+            : "warning",
+        },
+        [counterpartTargetSourceKey]: {
+          detail: targetAllowed
+            ? current[counterpartTargetSourceKey].detail
+            : `The browser did not grant readwrite permission for the ${counterpartSetOption.label} playing set.`,
+          selectedName: counterpartTargetDir.name,
+          state: targetAllowed
+            ? current[counterpartTargetSourceKey].state
+            : "warning",
+        },
+      }));
+      return;
+    }
+
+    const [fullSource, targetAssets] = await Promise.all([
+      resolveRomDirectory(counterpartFullDir, { preferRomsSubfolder: true }),
+      listRomAssets(counterpartTargetDir),
+    ]);
+    setManagedFullAssets(counterpartSet, fullSource.assets);
+    setManagedTargetAssets(counterpartSet, targetAssets);
+    setSourceStatuses((current) => ({
+      ...current,
+      [counterpartFullSourceKey]: {
+        detail:
+          fullSource.assets.size > 0
+            ? formatDirectoryStatus(
+                fullSource.assets.size,
+                fullSource.usedSubfolder,
+                `${counterpartSetOption.label} full set`,
+              )
+            : `No ROM archives found in the ${counterpartSetOption.label} full set.`,
+        selectedName: fullSource.selectedName,
+        state: fullSource.assets.size > 0 ? "ready" : "warning",
+      },
+      [counterpartTargetSourceKey]: {
+        detail:
+          targetAssets.size > 0
+            ? `${targetAssets.size.toLocaleString()} ROM item${targetAssets.size === 1 ? "" : "s"} found in the ${counterpartSetOption.label} playing set.`
+            : `No ROMs found yet. This ${counterpartSetOption.label} playing-set folder can still receive copied ROMs.`,
+        selectedName: counterpartTargetDir.name,
+        state: targetAssets.size > 0 ? "ready" : "warning",
+      },
+    }));
+  }
+
   if (!supportsFileSystemAccess) {
     return (
       <main className="unsupported-shell">
@@ -2220,7 +2361,7 @@ export function App() {
             <select
               value={activeSet}
               onChange={(event) =>
-                setActiveSet(event.target.value as ManagedSetKey)
+                changeActiveSet(event.target.value as ManagedSetKey)
               }
               disabled={isBusy}
             >
@@ -2229,6 +2370,24 @@ export function App() {
                   {option.label}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="set-picker">
+            <span>Compare against</span>
+            <select
+              value={counterpartSet}
+              onChange={(event) =>
+                setCounterpartSet(event.target.value as ManagedSetKey)
+              }
+              disabled={isBusy}
+            >
+              {SET_OPTIONS.filter((option) => option.key !== activeSet).map(
+                (option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ),
+              )}
             </select>
           </label>
           <button
@@ -3132,8 +3291,10 @@ async function inspectSource(
 
   const mode: FileSystemPermissionMode =
     key === "targetDir" ||
+    key === "mame287TargetDir" ||
     key === "fbneoTargetDir" ||
     key === "sampleTargetDir" ||
+    key === "mame287SampleTargetDir" ||
     key === "fbneoSampleTargetDir"
       ? "readwrite"
       : "read";
@@ -3146,7 +3307,7 @@ async function inspectSource(
     };
   }
 
-  if (key === "fullDir") {
+  if (key === "fullDir" || key === "mame287FullDir") {
     const source = await resolveRomDirectory(
       handle as FileSystemDirectoryHandle,
       { preferRomsSubfolder: true },
@@ -3184,7 +3345,7 @@ async function inspectSource(
     };
   }
 
-  if (key === "sampleSourceDir") {
+  if (key === "sampleSourceDir" || key === "mame287SampleSourceDir") {
     const source = await resolveSampleDirectory(
       handle as FileSystemDirectoryHandle,
       {
@@ -3202,7 +3363,11 @@ async function inspectSource(
     };
   }
 
-  if (key === "sampleTargetDir" || key === "fbneoSampleTargetDir") {
+  if (
+    key === "sampleTargetDir" ||
+    key === "mame287SampleTargetDir" ||
+    key === "fbneoSampleTargetDir"
+  ) {
     const target = await resolveSampleDirectory(
       handle as FileSystemDirectoryHandle,
       {
