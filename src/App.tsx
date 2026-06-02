@@ -47,6 +47,7 @@ import {
   buildCopyPlan,
   buildCounterpartPlan,
   buildMatchingSamplePlan,
+  buildParentSwapPlan,
   buildSamplePlan,
   buildSoundtrackPlan,
   enrichRomEntries,
@@ -56,6 +57,7 @@ import {
 import type {
   CopyPlan,
   CounterpartPlanItem,
+  ParentSwapPlanItem,
   ParsedRom,
   RomAsset,
   RomEntry,
@@ -69,6 +71,8 @@ type ViewFilter =
   | "inSet"
   | "shared"
   | "counterpart"
+  | "duplicates"
+  | "nonParent"
   | "all"
   | "selected"
   | "unavailable";
@@ -249,6 +253,8 @@ const VIEW_OPTIONS: Array<{ key: ViewFilter; label: string }> = [
   { key: "inSet", label: "In set" },
   { key: "shared", label: "Shared" },
   { key: "counterpart", label: "Counterpart" },
+  { key: "duplicates", label: "In both sets" },
+  { key: "nonParent", label: "Non-parent in set" },
   { key: "selected", label: "Selected" },
   { key: "unavailable", label: "No source" },
   { key: "all", label: "All" },
@@ -317,8 +323,7 @@ const EMPTY_SOURCE_STATUS: Record<SourceKey, SourceStatus> = {
 
 export function App() {
   const [activeSet, setActiveSet] = useState<ManagedSetKey>("mame");
-  const [counterpartSet, setCounterpartSet] =
-    useState<ManagedSetKey>("fbneo");
+  const [counterpartSet, setCounterpartSet] = useState<ManagedSetKey>("fbneo");
   const [handles, setHandles] = useState<SourceHandles>(EMPTY_HANDLES);
   const [mameEntries, setMameEntries] = useState<ParsedRom[]>([]);
   const [mame287Entries, setMame287Entries] = useState<ParsedRom[]>([]);
@@ -385,10 +390,14 @@ export function App() {
   const [isIndexing, setIsIndexing] = useState(false);
   const [counterpartProgress, setCounterpartProgress] =
     useState<CopyProgress | null>(null);
+  const [parentSwapProgress, setParentSwapProgress] =
+    useState<CopyProgress | null>(null);
   const [copyProgress, setCopyProgress] = useState<CopyProgress | null>(null);
   const [removeProgress, setRemoveProgress] = useState<CopyProgress | null>(
     null,
   );
+  const [duplicateRemoveProgress, setDuplicateRemoveProgress] =
+    useState<CopyProgress | null>(null);
   const [sampleFixProgress, setSampleFixProgress] =
     useState<CopyProgress | null>(null);
   const [lastPlan, setLastPlan] = useState<CopyPlan | null>(null);
@@ -788,6 +797,11 @@ export function App() {
     ],
   );
 
+  const selectedParentSwapPlan = useMemo(
+    () => buildParentSwapPlan(selectedIds, entries),
+    [entries, selectedIds],
+  );
+
   const playSetSamplePlan = useMemo<SamplePlan>(
     () =>
       activeSet === "mame"
@@ -881,6 +895,32 @@ export function App() {
     return items;
   }, [entries, selectedIds]);
 
+  const selectedDuplicateRemoveItems = useMemo(() => {
+    const items: RemoveItem[] = [];
+    const seenAssets = new Set<string>();
+
+    for (const entry of entries) {
+      if (
+        !selectedIds.has(entry.id) ||
+        !entry.inTarget ||
+        !entry.counterpartInTarget ||
+        !entry.targetAsset
+      ) {
+        continue;
+      }
+
+      const assetKey = entry.targetAsset.name.toLowerCase();
+      if (seenAssets.has(assetKey)) {
+        continue;
+      }
+
+      seenAssets.add(assetKey);
+      items.push({ asset: entry.targetAsset, entry });
+    }
+
+    return items;
+  }, [entries, selectedIds]);
+
   const regions = useMemo(() => getRegionOptions(entries), [entries]);
 
   const stats = useMemo(() => {
@@ -915,6 +955,8 @@ export function App() {
       selected: selectedIds.size,
       copyable: selectedPlan.items.length,
       counterpartCopyable: selectedCounterpartPlan.length,
+      duplicateRemovable: selectedDuplicateRemoveItems.length,
+      parentSwappable: selectedParentSwapPlan.length,
       sampleCopyable: selectedSamplePlan.items.length,
       sampleNeeded: selectedSamplePlan.required.length,
       sampleGaps:
@@ -940,6 +982,8 @@ export function App() {
     entries,
     selectedIds.size,
     selectedCounterpartPlan.length,
+    selectedDuplicateRemoveItems.length,
+    selectedParentSwapPlan.length,
     selectedPlan.items.length,
     playSetSamplePlan.items.length,
     playSetSamplePlan.missing.length,
@@ -953,7 +997,12 @@ export function App() {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
     const filtered = entries.filter((entry) => {
-      if (hideClones && entry.cloneOf) {
+      if (
+        hideClones &&
+        entry.cloneOf &&
+        view !== "nonParent" &&
+        view !== "duplicates"
+      ) {
         return false;
       }
 
@@ -993,6 +1042,14 @@ export function App() {
         );
       }
 
+      if (view === "duplicates") {
+        return entry.inTarget && entry.counterpartInTarget;
+      }
+
+      if (view === "nonParent") {
+        return entry.inTarget && Boolean(entry.cloneOf);
+      }
+
       if (view === "selected") {
         return selectedIds.has(entry.id);
       }
@@ -1026,13 +1083,16 @@ export function App() {
     isIndexing ||
     Boolean(copyProgress) ||
     Boolean(counterpartProgress) ||
+    Boolean(parentSwapProgress) ||
     Boolean(removeProgress) ||
+    Boolean(duplicateRemoveProgress) ||
     Boolean(sampleFixProgress);
   const copyWorkCount =
     selectedPlan.items.length +
     selectedSamplePlan.items.length +
     selectedSoundtrackPlan.items.length;
   const counterpartWorkCount = selectedCounterpartPlan.length;
+  const parentSwapWorkCount = selectedParentSwapPlan.length;
   const copySelectableCount =
     copyWorkCount ||
     (includeSamples ? selectedSamplePlan.required.length : 0) ||
@@ -2043,6 +2103,108 @@ export function App() {
     selectedIds,
   ]);
 
+  const swapSelectedToParents = useCallback(async () => {
+    if (!activeTargetDir) {
+      setError("Choose a playing set folder first.");
+      return;
+    }
+
+    const plan = buildParentSwapPlan(selectedIds, entries);
+    if (plan.length === 0) {
+      setMessage("No selected regional clone ROMs can be swapped to parents.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Swap ${plan.length.toLocaleString()} selected regional clone ROM item${plan.length === 1 ? "" : "s"} to ${plan.length === 1 ? "its" : "their"} parent ROM${plan.length === 1 ? "" : "s"}? Parent archives will be copied from the ${activeSetOption.label} full set, verified, and then the selected clone${plan.length === 1 ? "" : "s"} will be removed.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setError("");
+      const targetAllowed = await verifyPermission(
+        activeTargetDir,
+        "readwrite",
+      );
+      if (!targetAllowed) {
+        throw new Error(
+          "The browser did not receive write permission for the playing set.",
+        );
+      }
+
+      const beforeCopyAssets = await listRomAssets(activeTargetDir);
+      const parentAssets = new Map<string, RomAsset>();
+      for (const item of plan) {
+        const key = item.parentAsset.baseName.toLowerCase();
+        if (!beforeCopyAssets.has(key)) {
+          parentAssets.set(key, item.parentAsset);
+        }
+      }
+
+      const copyItems = [...parentAssets.values()];
+      for (let index = 0; index < copyItems.length; index += 1) {
+        const asset = copyItems[index];
+        setParentSwapProgress({
+          current: index + 1,
+          total: copyItems.length + plan.length,
+          label: `Copying parent: ${asset.name}`,
+        });
+        await copyAssetToDirectory(asset, activeTargetDir);
+      }
+
+      const afterCopyAssets =
+        copyItems.length > 0
+          ? await listRomAssets(activeTargetDir)
+          : beforeCopyAssets;
+      const removals = getVerifiedParentSwapItems(plan, afterCopyAssets);
+      for (let index = 0; index < removals.length; index += 1) {
+        const item = removals[index];
+        setParentSwapProgress({
+          current: copyItems.length + index + 1,
+          total: copyItems.length + removals.length,
+          label: `Removing clone: ${item.removeAsset.name}`,
+        });
+        await removeAssetFromDirectory(item.removeAsset, activeTargetDir);
+      }
+
+      const refreshedTargetAssets =
+        removals.length > 0
+          ? await listRomAssets(activeTargetDir)
+          : afterCopyAssets;
+      setManagedTargetAssets(activeSet, refreshedTargetAssets);
+      setSourceStatuses((current) => ({
+        ...current,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          selectedName: activeTargetDir.name,
+          state: "ready",
+        },
+      }));
+      setSelectedIds((current) => {
+        const completed = new Set(removals.map((item) => item.entry.id));
+        return new Set([...current].filter((id) => !completed.has(id)));
+      });
+
+      const skipped = plan.length - removals.length;
+      setMessage(
+        `${copyItems.length.toLocaleString()} parent ROM archive${copyItems.length === 1 ? "" : "s"} copied. ${removals.length.toLocaleString()} verified regional clone${removals.length === 1 ? "" : "s"} removed.${skipped > 0 ? ` ${skipped.toLocaleString()} clone${skipped === 1 ? "" : "s"} kept because the parent could not be verified.` : ""}`,
+      );
+    } catch (caught) {
+      setError(getErrorMessage(caught));
+    } finally {
+      setParentSwapProgress(null);
+    }
+  }, [
+    activeSet,
+    activeSetOption.label,
+    activeTargetDir,
+    activeTargetSourceKey,
+    entries,
+    selectedIds,
+  ]);
+
   const fixPlaySetSamples = useCallback(async () => {
     if (playSetSamplePlan.required.length === 0) {
       setMessage("No sample packs are required by the current playing set.");
@@ -2140,7 +2302,7 @@ export function App() {
     }
 
     const confirmed = window.confirm(
-      `Remove ${selectedRemoveItems.length.toLocaleString()} ROM item${selectedRemoveItems.length === 1 ? "" : "s"} from the playing set?`,
+      `Remove ${selectedRemoveItems.length.toLocaleString()} ROM item${selectedRemoveItems.length === 1 ? "" : "s"} from the ${activeSetOption.label} playing set?`,
     );
     if (!confirmed) {
       return;
@@ -2163,7 +2325,7 @@ export function App() {
         setRemoveProgress({
           current: index + 1,
           total: selectedRemoveItems.length,
-          label: item.asset.name,
+          label: `Removing from ${activeSetOption.label}: ${item.asset.name}`,
         });
         await removeAssetFromDirectory(item.asset, activeTargetDir);
       }
@@ -2191,7 +2353,7 @@ export function App() {
         return new Set([...current].filter((id) => !removed.has(id)));
       });
       setMessage(
-        `${selectedRemoveItems.length.toLocaleString()} ROM item${selectedRemoveItems.length === 1 ? "" : "s"} removed.`,
+        `${selectedRemoveItems.length.toLocaleString()} ROM item${selectedRemoveItems.length === 1 ? "" : "s"} removed from the ${activeSetOption.label} playing set.`,
       );
     } catch (caught) {
       setError(getErrorMessage(caught));
@@ -2205,6 +2367,93 @@ export function App() {
     activeTargetDir,
     activeTargetSourceKey,
     selectedRemoveItems,
+  ]);
+
+  const removeSelectedDuplicates = useCallback(async () => {
+    if (!activeTargetDir) {
+      setError("Choose a playing set folder first.");
+      return;
+    }
+
+    if (selectedDuplicateRemoveItems.length === 0) {
+      setMessage(
+        `No selected ROMs exist in both the ${activeSetOption.label} and ${counterpartSetOption.label} playing sets.`,
+      );
+      return;
+    }
+
+    const preview = selectedDuplicateRemoveItems
+      .slice(0, 5)
+      .map((item) => item.asset.name)
+      .join(", ");
+    const remaining =
+      selectedDuplicateRemoveItems.length > 5
+        ? `, and ${(selectedDuplicateRemoveItems.length - 5).toLocaleString()} more`
+        : "";
+    const confirmed = window.confirm(
+      `Remove ${selectedDuplicateRemoveItems.length.toLocaleString()} duplicate ROM item${selectedDuplicateRemoveItems.length === 1 ? "" : "s"} from the ${activeSetOption.label} playing set only? Matching ROM IDs already exist in the ${counterpartSetOption.label} playing set and will be kept.\n\nRemoving from ${activeSetOption.label}: ${preview}${remaining}`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setError("");
+      const targetAllowed = await verifyPermission(
+        activeTargetDir,
+        "readwrite",
+      );
+      if (!targetAllowed) {
+        throw new Error(
+          `The browser did not receive write permission for the ${activeSetOption.label} playing set.`,
+        );
+      }
+
+      for (
+        let index = 0;
+        index < selectedDuplicateRemoveItems.length;
+        index += 1
+      ) {
+        const item = selectedDuplicateRemoveItems[index];
+        setDuplicateRemoveProgress({
+          current: index + 1,
+          total: selectedDuplicateRemoveItems.length,
+          label: `Removing duplicate from ${activeSetOption.label}: ${item.asset.name}`,
+        });
+        await removeAssetFromDirectory(item.asset, activeTargetDir);
+      }
+
+      const refreshedTargetAssets = await listRomAssets(activeTargetDir);
+      setManagedTargetAssets(activeSet, refreshedTargetAssets);
+      setSourceStatuses((current) => ({
+        ...current,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          selectedName: activeTargetDir.name,
+          state: "ready",
+        },
+      }));
+      setSelectedIds((current) => {
+        const removed = new Set(
+          selectedDuplicateRemoveItems.map((item) => item.entry.id),
+        );
+        return new Set([...current].filter((id) => !removed.has(id)));
+      });
+      setMessage(
+        `${selectedDuplicateRemoveItems.length.toLocaleString()} duplicate ROM item${selectedDuplicateRemoveItems.length === 1 ? "" : "s"} removed from the ${activeSetOption.label} playing set. The ${counterpartSetOption.label} playing set was kept unchanged.`,
+      );
+    } catch (caught) {
+      setError(getErrorMessage(caught));
+    } finally {
+      setDuplicateRemoveProgress(null);
+    }
+  }, [
+    activeSet,
+    activeSetOption.label,
+    activeTargetDir,
+    activeTargetSourceKey,
+    counterpartSetOption.label,
+    selectedDuplicateRemoveItems,
   ]);
 
   function toggleSelected(id: string) {
@@ -2458,11 +2707,49 @@ export function App() {
             </span>
           </button>
           <button
+            className="button secondary"
+            type="button"
+            onClick={swapSelectedToParents}
+            disabled={parentSwapWorkCount === 0 || isBusy}
+            title={`${parentSwapWorkCount.toLocaleString()} selected regional clone ROM item${parentSwapWorkCount === 1 ? "" : "s"} can be swapped to parent`}
+          >
+            {parentSwapProgress ? (
+              <Loader2 className="spin" aria-hidden="true" />
+            ) : (
+              <ArrowLeftRight aria-hidden="true" />
+            )}
+            <span>
+              To Parent{" "}
+              {parentSwapWorkCount > 0
+                ? parentSwapWorkCount.toLocaleString()
+                : ""}
+            </span>
+          </button>
+          <button
+            className="button danger"
+            type="button"
+            onClick={removeSelectedDuplicates}
+            disabled={selectedDuplicateRemoveItems.length === 0 || isBusy}
+            title={`Remove ${selectedDuplicateRemoveItems.length.toLocaleString()} selected duplicate ROM item${selectedDuplicateRemoveItems.length === 1 ? "" : "s"} from the ${activeSetOption.label} playing set only`}
+          >
+            {duplicateRemoveProgress ? (
+              <Loader2 className="spin" aria-hidden="true" />
+            ) : (
+              <Trash2 aria-hidden="true" />
+            )}
+            <span>
+              Remove {activeSetOption.shortLabel} duplicates{" "}
+              {selectedDuplicateRemoveItems.length > 0
+                ? selectedDuplicateRemoveItems.length.toLocaleString()
+                : ""}
+            </span>
+          </button>
+          <button
             className="button danger"
             type="button"
             onClick={removeSelected}
             disabled={selectedRemoveItems.length === 0 || isBusy}
-            title={`${selectedRemoveItems.length.toLocaleString()} item${selectedRemoveItems.length === 1 ? "" : "s"} removable`}
+            title={`Remove ${selectedRemoveItems.length.toLocaleString()} selected item${selectedRemoveItems.length === 1 ? "" : "s"} from the ${activeSetOption.label} playing set`}
           >
             {removeProgress ? (
               <Loader2 className="spin" aria-hidden="true" />
@@ -2470,7 +2757,7 @@ export function App() {
               <Trash2 aria-hidden="true" />
             )}
             <span>
-              Remove{" "}
+              Remove {activeSetOption.shortLabel}{" "}
               {selectedRemoveItems.length > 0
                 ? selectedRemoveItems.length.toLocaleString()
                 : ""}
@@ -2524,6 +2811,12 @@ export function App() {
           label="Counterpart"
           value={stats.counterpartCopyable}
           tone="action"
+        />
+        <Metric label="To parent" value={stats.parentSwappable} tone="action" />
+        <Metric
+          label={`${activeSetOption.shortLabel} selected dupes`}
+          value={stats.duplicateRemovable}
+          tone="danger"
         />
         <Metric label="Samples" value={stats.sampleCopyable} tone="action" />
         <Metric
@@ -2697,6 +2990,22 @@ export function App() {
           </div>
         ) : null}
 
+        {parentSwapProgress ? (
+          <div className="copy-progress">
+            <div>
+              <strong>
+                Swapping to parent {parentSwapProgress.current} of{" "}
+                {parentSwapProgress.total}
+              </strong>
+              <span>{parentSwapProgress.label}</span>
+            </div>
+            <progress
+              value={parentSwapProgress.current}
+              max={parentSwapProgress.total}
+            />
+          </div>
+        ) : null}
+
         {removeProgress ? (
           <div className="remove-progress">
             <div>
@@ -2708,6 +3017,23 @@ export function App() {
             <progress
               value={removeProgress.current}
               max={removeProgress.total}
+            />
+          </div>
+        ) : null}
+
+        {duplicateRemoveProgress ? (
+          <div className="remove-progress">
+            <div>
+              <strong>
+                Removing duplicates from {activeSetOption.label}{" "}
+                {duplicateRemoveProgress.current} of{" "}
+                {duplicateRemoveProgress.total}
+              </strong>
+              <span>{duplicateRemoveProgress.label}</span>
+            </div>
+            <progress
+              value={duplicateRemoveProgress.current}
+              max={duplicateRemoveProgress.total}
             />
           </div>
         ) : null}
@@ -2769,6 +3095,33 @@ export function App() {
               {removeOriginalAfterCounterpartCopy
                 ? " - originals will be removed only after the copied version is verified"
                 : ""}
+            </span>
+          </div>
+        ) : null}
+
+        {selectedParentSwapPlan.length > 0 ? (
+          <div className="plan-note">
+            <ArrowLeftRight aria-hidden="true" />
+            <span>
+              {selectedParentSwapPlan.length.toLocaleString()} regional clone
+              ROM item
+              {selectedParentSwapPlan.length === 1 ? "" : "s"} ready to swap to
+              parent - selected clones will be removed only after the parent ROM
+              is verified
+            </span>
+          </div>
+        ) : null}
+
+        {selectedDuplicateRemoveItems.length > 0 ? (
+          <div className="plan-note">
+            <Trash2 aria-hidden="true" />
+            <span>
+              {selectedDuplicateRemoveItems.length.toLocaleString()} selected
+              duplicate ROM item
+              {selectedDuplicateRemoveItems.length === 1 ? "" : "s"} can be
+              removed from the {activeSetOption.label} playing set. Matching
+              ROM IDs in the {counterpartSetOption.label} playing set will be
+              kept.
             </span>
           </div>
         ) : null}
@@ -3055,7 +3408,10 @@ function RomRow({
       : "",
     entry.genre || entry.category,
     entry.driverStatus,
-    entry.driverName ? `driver: ${entry.driverName}` : "",
+    entry.sourceFile ? `source: ${entry.sourceFile}` : "",
+    entry.dumpStatus ? `dump: ${entry.dumpStatus}` : "",
+    entry.isMechanical ? "mechanical" : "",
+    entry.isDevice ? "device" : "",
     entry.sampleArchiveIds.length > 0
       ? `samples: ${entry.sampleArchiveIds.join(", ")}`
       : "",
@@ -3118,7 +3474,16 @@ function RomRow({
         <div className="compact-stat">
           {entry.romCount ? `${entry.romCount} files` : "-"}
         </div>
-        <div className="game-detail">{formatBytes(entry.romSize)}</div>
+        <div className="game-detail">
+          {[
+            entry.diskCount
+              ? `${entry.diskCount} disk${entry.diskCount === 1 ? "" : "s"}`
+              : "",
+            formatBytes(entry.romSize),
+          ]
+            .filter(Boolean)
+            .join(" | ")}
+        </div>
       </td>
       <td className="media-col">
         <a
@@ -3259,6 +3624,30 @@ function getVerifiedCounterpartRemovals(
   }
 
   return removals;
+}
+
+function getVerifiedParentSwapItems(
+  plan: ParentSwapPlanItem[],
+  targetAssets: Map<string, RomAsset>,
+) {
+  const items: ParentSwapPlanItem[] = [];
+  const seen = new Set<string>();
+
+  for (const item of plan) {
+    if (!targetAssets.has(item.parentAsset.baseName.toLowerCase())) {
+      continue;
+    }
+
+    const removeKey = item.removeAsset.name.toLowerCase();
+    if (seen.has(removeKey)) {
+      continue;
+    }
+
+    seen.add(removeKey);
+    items.push(item);
+  }
+
+  return items;
 }
 
 function sourceLabel(key: SourceKey) {

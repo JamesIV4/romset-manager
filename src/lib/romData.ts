@@ -3,6 +3,7 @@ import type {
   CopyPlanItem,
   CounterpartPlanItem,
   MissingSample,
+  ParentSwapPlanItem,
   ParsedRom,
   RomAsset,
   RomEntry,
@@ -110,6 +111,14 @@ function mergeFallbackMetadata(entry: ParsedRom, fallback: ParsedRom): ParsedRom
     controls: entry.controls || fallback.controls,
     coins: entry.coins || fallback.coins,
     genre: entry.genre || fallback.genre,
+    driverStatus: entry.driverStatus || fallback.driverStatus,
+    isDevice: entry.isDevice || fallback.isDevice,
+    isMechanical: entry.isMechanical || fallback.isMechanical,
+    sourceFile: entry.sourceFile || fallback.sourceFile,
+    chipCount: entry.chipCount || fallback.chipCount,
+    deviceCount: entry.deviceCount || fallback.deviceCount,
+    diskCount: entry.diskCount || fallback.diskCount,
+    dumpStatus: entry.dumpStatus || fallback.dumpStatus,
     searchText: [entry.id, fallback.title, entry.title, entry.category, fallback.searchText].filter(Boolean).join(' ').toLowerCase(),
   };
 }
@@ -142,7 +151,14 @@ function createAssetEntry(id: string, asset?: RomAsset): ParsedRom {
     display: '',
     driverStatus: '',
     isBios: id === 'neogeo',
+    isDevice: false,
+    isMechanical: false,
     isRunnable: id !== 'neogeo',
+    sourceFile: '',
+    chipCount: 0,
+    deviceCount: 0,
+    diskCount: 0,
+    dumpStatus: '',
     romCount: asset ? 1 : 0,
     romSize: asset?.size ?? 0,
     searchText: [id, title, asset?.name].filter(Boolean).join(' ').toLowerCase(),
@@ -351,6 +367,45 @@ export function buildCounterpartPlan(
     seen.add(key);
     items.push(item);
   }
+}
+
+export function buildParentSwapPlan(
+  selectedIds: Iterable<string>,
+  entries: RomEntry[],
+): ParentSwapPlanItem[] {
+  const byId = new Map(entries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const items: ParentSwapPlanItem[] = [];
+  const seenAssets = new Set<string>();
+
+  for (const id of selectedIds) {
+    const entry = byId.get(id.toLowerCase());
+    const parentEntry = entry?.cloneOf
+      ? byId.get(entry.cloneOf.toLowerCase())
+      : undefined;
+    if (
+      !entry?.inTarget ||
+      !entry.targetAsset ||
+      !parentEntry?.fullAsset ||
+      parentEntry.id.toLowerCase() === entry.id.toLowerCase()
+    ) {
+      continue;
+    }
+
+    const assetKey = entry.targetAsset.name.toLowerCase();
+    if (seenAssets.has(assetKey)) {
+      continue;
+    }
+
+    seenAssets.add(assetKey);
+    items.push({
+      entry,
+      parentAsset: parentEntry.fullAsset,
+      parentEntry,
+      removeAsset: entry.targetAsset,
+    });
+  }
+
+  return items;
 }
 
 export function buildSoundtrackPlan(

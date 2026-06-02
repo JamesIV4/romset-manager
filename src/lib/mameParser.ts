@@ -72,8 +72,10 @@ function parseMachine(node: Element): ParsedRom | null {
   const display = node.querySelector(':scope > display, :scope > screen, :scope > video') ?? node.querySelector('display, screen, video');
   const drivers = Array.from(node.querySelectorAll(':scope > driver'));
   const statusDriver = drivers.find((driver) => driver.hasAttribute('status') || driver.hasAttribute('emulation'));
-  const nameDriver = drivers.find((driver) => !driver.hasAttribute('status') && driver.textContent?.trim());
   const romNodes = Array.from(node.querySelectorAll(':scope > rom'));
+  const diskNodes = Array.from(node.querySelectorAll(':scope > disk'));
+  const chipNodes = Array.from(node.querySelectorAll(':scope > chip'));
+  const deviceNodes = Array.from(node.querySelectorAll(':scope > device_ref'));
   const sampleNames = Array.from(node.querySelectorAll(':scope > sample'))
     .map((sample) => attr(sample, 'name'))
     .filter(Boolean);
@@ -91,10 +93,14 @@ function parseMachine(node: Element): ParsedRom | null {
   const romOf = attr(node, 'romof');
   const sampleOf = attr(node, 'sampleof');
   const sampleArchiveIds = sampleOf ? [sampleOf] : sampleNames.length > 0 ? [id] : [];
-  const driverName = cleanMetadata(nameDriver?.textContent || '');
-  const driverStatus = cleanMetadata(attr(statusDriver, 'status') || attr(statusDriver, 'emulation'));
+  const sourceFile = attr(node, 'sourcefile');
+  const driverName = sourceFile;
+  const driverStatus = getDriverStatus(statusDriver);
+  const dumpStatus = getDumpStatus([...romNodes, ...diskNodes]);
   const region = inferRegion(title);
   const isBios = attr(node, 'isbios') === 'yes' || Boolean(node.querySelector(':scope > biosset'));
+  const isDevice = attr(node, 'isdevice') === 'yes';
+  const isMechanical = attr(node, 'ismechanical') === 'yes';
   const isRunnable = attr(node, 'runnable') !== 'no' && !isBios;
 
   return {
@@ -118,7 +124,14 @@ function parseMachine(node: Element): ParsedRom | null {
     display: displaySummary,
     driverStatus,
     isBios,
+    isDevice,
+    isMechanical,
     isRunnable,
+    sourceFile,
+    chipCount: chipNodes.length,
+    deviceCount: deviceNodes.length,
+    diskCount: diskNodes.length,
+    dumpStatus,
     romCount: romNodes.length,
     romSize,
     searchText: [
@@ -135,8 +148,10 @@ function parseMachine(node: Element): ParsedRom | null {
       sampleArchiveIds.join(' '),
       sampleNames.join(' '),
       driverName,
+      sourceFile,
       controls,
       driverStatus,
+      dumpStatus,
     ]
       .filter(Boolean)
       .join(' ')
@@ -193,7 +208,14 @@ function createMetadataBackedEntry(
     display: '',
     driverStatus: 'archive metadata',
     isBios: id === 'neogeo',
+    isDevice: false,
+    isMechanical: false,
     isRunnable: id !== 'neogeo',
+    sourceFile: '',
+    chipCount: 0,
+    deviceCount: 0,
+    diskCount: 0,
+    dumpStatus: '',
     romCount: 1,
     romSize: asset.size ?? 0,
     searchText: [id, title, asset.name, asset.relativePath, collectionTitle, folder].filter(Boolean).join(' ').toLowerCase(),
@@ -426,4 +448,35 @@ function getDisplay(display: Element | null) {
   const rate = refresh && Number.isFinite(refreshNumber) ? `${refreshNumber.toFixed(0)} Hz` : refresh;
 
   return [type || screen, orientation, size, rotation || rate].filter(Boolean).join(' ');
+}
+
+function getDriverStatus(driver: Element | undefined) {
+  if (!driver) {
+    return '';
+  }
+
+  const fields = [
+    ['status', attr(driver, 'status')],
+    ['emulation', attr(driver, 'emulation')],
+    ['savestate', attr(driver, 'savestate')],
+    ['cocktail', attr(driver, 'cocktail')],
+    ['protection', attr(driver, 'protection')],
+    ['color', attr(driver, 'color')],
+    ['sound', attr(driver, 'sound')],
+    ['graphics', attr(driver, 'graphic')],
+  ];
+
+  return fields
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}: ${value}`)
+    .join(', ');
+}
+
+function getDumpStatus(nodes: Element[]) {
+  const statuses = nodes.map((node) => attr(node, 'status')).filter(Boolean);
+  if (statuses.length === 0) {
+    return '';
+  }
+
+  return [...new Set(statuses)].join(', ');
 }

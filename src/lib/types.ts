@@ -64,7 +64,14 @@ export type ParsedRom = {
   display: string;
   driverStatus: string;
   isBios: boolean;
+  isDevice: boolean;
+  isMechanical: boolean;
   isRunnable: boolean;
+  sourceFile: string;
+  chipCount: number;
+  deviceCount: number;
+  diskCount: number;
+  dumpStatus: string;
   romCount: number;
   romSize: number;
   searchText: string;
@@ -95,6 +102,13 @@ export type CounterpartPlanItem = {
   removeTarget?: FileSystemDirectoryHandle;
   sourceAsset: RomAsset;
   targetDirectory: FileSystemDirectoryHandle;
+};
+
+export type ParentSwapPlanItem = {
+  entry: RomEntry;
+  parentAsset: RomAsset;
+  parentEntry: RomEntry;
+  removeAsset: RomAsset;
 };
 
 export type CopyPlanItem = {

@@ -602,18 +602,39 @@ async function findRomSubfolder(directory: FileSystemDirectoryHandle, name: stri
 }
 
 async function findXmlInDirectory(directory: FileSystemDirectoryHandle) {
+  const candidates: ResolvedXmlFile[] = [];
+
   for await (const [name, handle] of directory.entries()) {
     if (handle.kind !== 'file' || !name.toLowerCase().endsWith('.xml')) {
       continue;
     }
 
-    return {
+    candidates.push({
       file: await handle.getFile(),
       handle,
-    };
+      selectedName: directory.name,
+      usedSubfolder: false,
+    });
   }
 
-  return null;
+  return candidates.sort(compareXmlPriority)[0] ?? null;
+}
+
+function compareXmlPriority(left: ResolvedXmlFile, right: ResolvedXmlFile) {
+  return getXmlPriority(right.file.name) - getXmlPriority(left.file.name);
+}
+
+function getXmlPriority(name: string) {
+  const normalized = name.toLowerCase();
+  if (/^mame\d+(lx)?\.xml$/.test(normalized)) {
+    return 3;
+  }
+
+  if (normalized.includes('listxml')) {
+    return 2;
+  }
+
+  return 1;
 }
 
 function compareAssetPriority(left: RomAsset, right: RomAsset) {

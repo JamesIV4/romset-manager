@@ -108,6 +108,8 @@ code {
 
 .topbar-actions {
   align-items: flex-end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .set-picker {
@@ -156,8 +158,10 @@ code {
 }
 
 .button {
+  flex: 0 0 auto;
   padding: 0 14px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .button.primary {
