@@ -16,6 +16,8 @@ The same app runs on GitHub Pages and locally. It uses the browser File System A
 Choose the active set and the set to compare against in the UI. Both sets need their full-set folder and playing-set folder selected. XML metadata is required for the active set and is auto-detected from its full-set folder. For MAME 0.287, use the official `mame0287.xml` list XML from `mame0287lx.zip`; it is preferred automatically over ROM-manager DATs such as `MAME 0.287 ROMs (non-merged).xml` because it includes parent, clone, sample, driver, input, and display metadata. MAME samples use explicit source and target folders so the browser can grant read/write permissions.
 FBNeo sample packs are auto-detected from the full set's `samples` folder and are copied only to the configured FBNeo sample target, not to the ROM folder.
 
+MAME CHD requirements are read from the XML metadata. CHDs are expected as folders next to the ROM archive, using the same base name as the ROM zip, such as `kinst.zip` plus `kinst\`. Use the Missing CHDs view to find playing-set ROMs that need CHD folders, and use Fix CHDs to copy missing folders from the active full set into the active playing set.
+
 Use the Shared view to see games found in both selected full sets. Use the Counterpart view to select games that are already in one playing set and available in the other full set, then use Swap to copy the destination set's version. The Remove after swap option removes the original only after the copied counterpart is confirmed present.
 
 If a swap was copied without removing the original, use the In both sets view and select the duplicate ROMs. The Remove duplicates action names the active playing set it will clean and leaves the compared playing set unchanged.

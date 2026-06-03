@@ -1,4 +1,6 @@
 import type {
+  ChdPlan,
+  ChdPlanItem,
   CopyPlan,
   CopyPlanItem,
   CounterpartPlanItem,
@@ -26,6 +28,8 @@ export function enrichRomEntries(
   targetAssets: Map<string, RomAsset>,
   counterpartAssets: Map<string, RomAsset> = new Map(),
   counterpartTargetAssets: Map<string, RomAsset> = new Map(),
+  chdAssets: Map<string, RomAsset> = new Map(),
+  chdTargetAssets: Map<string, RomAsset> = new Map(),
 ): RomEntry[] {
   const byId = new Map(parsed.map((entry) => [entry.id.toLowerCase(), entry]));
 
@@ -35,12 +39,20 @@ export function enrichRomEntries(
     const targetAsset = targetAssets.get(key);
     const counterpartAsset = counterpartAssets.get(key);
     const counterpartTargetAsset = counterpartTargetAssets.get(key);
+    const chdAsset = chdAssets.get(key);
+    const chdTargetAsset = chdTargetAssets.get(key);
     const parentId = entry.cloneOf || entry.romOf;
     const parent = parentId ? byId.get(parentId.toLowerCase()) : undefined;
 
     return {
       ...entry,
       available: Boolean(fullAsset),
+      chdAsset,
+      chdAssetName: chdAsset?.name || '',
+      chdAvailable: isChdRequired(entry) && Boolean(chdAsset),
+      chdInTarget: isChdRequired(entry) && Boolean(chdTargetAsset),
+      chdTargetAsset,
+      chdTargetAssetName: chdTargetAsset?.name || '',
       counterpartAvailable: Boolean(counterpartAsset),
       counterpartAsset,
       counterpartAssetName: counterpartAsset?.name || '',
@@ -118,6 +130,7 @@ function mergeFallbackMetadata(entry: ParsedRom, fallback: ParsedRom): ParsedRom
     chipCount: entry.chipCount || fallback.chipCount,
     deviceCount: entry.deviceCount || fallback.deviceCount,
     diskCount: entry.diskCount || fallback.diskCount,
+    diskNames: entry.diskNames.length > 0 ? entry.diskNames : fallback.diskNames,
     dumpStatus: entry.dumpStatus || fallback.dumpStatus,
     searchText: [entry.id, fallback.title, entry.title, entry.category, fallback.searchText].filter(Boolean).join(' ').toLowerCase(),
   };
@@ -158,10 +171,63 @@ function createAssetEntry(id: string, asset?: RomAsset): ParsedRom {
     chipCount: 0,
     deviceCount: 0,
     diskCount: 0,
+    diskNames: [],
     dumpStatus: '',
     romCount: asset ? 1 : 0,
     romSize: asset?.size ?? 0,
     searchText: [id, title, asset?.name].filter(Boolean).join(' ').toLowerCase(),
+  };
+}
+
+export function buildChdPlan(
+  selectedIds: Iterable<string>,
+  entries: RomEntry[],
+): ChdPlan {
+  const byId = new Map(entries.map((entry) => [entry.id.toLowerCase(), entry]));
+  const items: ChdPlanItem[] = [];
+  const missing: RomEntry[] = [];
+  const alreadyPresent: RomEntry[] = [];
+  const required: RomEntry[] = [];
+  const seenIds = new Set<string>();
+  const seenAssets = new Set<string>();
+
+  for (const id of selectedIds) {
+    const key = id.toLowerCase();
+    const entry = byId.get(key);
+    if (!entry || seenIds.has(key) || !isChdRequired(entry)) {
+      continue;
+    }
+
+    seenIds.add(key);
+    required.push(entry);
+
+    if (entry.chdInTarget) {
+      alreadyPresent.push(entry);
+      continue;
+    }
+
+    if (!entry.chdAsset) {
+      missing.push(entry);
+      continue;
+    }
+
+    const assetKey = entry.chdAsset.name.toLowerCase();
+    if (seenAssets.has(assetKey)) {
+      continue;
+    }
+
+    seenAssets.add(assetKey);
+    items.push({
+      entry,
+      asset: entry.chdAsset,
+    });
+  }
+
+  return {
+    alreadyPresent,
+    items,
+    missing,
+    required,
   };
 }
 
@@ -454,11 +520,6 @@ export function buildSoundtrackPlan(
   };
 }
 
-export function getScreenscraperUrl(entry: RomEntry) {
-  const query = `${entry.title} ${entry.id}`.replace(/\s+/g, ' ').trim();
-  return `https://www.screenscraper.fr/recherche.php?recherche=${encodeURIComponent(query)}`;
-}
-
 export function getRegionOptions(entries: RomEntry[]) {
   return Array.from(new Set(entries.map((entry) => entry.region).filter(Boolean))).sort((left, right) =>
     left.localeCompare(right),
@@ -475,4 +536,8 @@ function getSoundtrackSampleId(entry: RomEntry) {
   }
 
   return '';
+}
+
+function isChdRequired(entry: ParsedRom) {
+  return entry.diskCount > 0 || entry.diskNames.length > 0;
 }

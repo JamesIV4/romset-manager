@@ -8,6 +8,7 @@ const EXTENSION_PRIORITY = ['.zip', '.7z', '.rar', '.chd', ''];
 
 export type ResolvedRomDirectory = {
   assets: Map<string, RomAsset>;
+  chdAssets: Map<string, RomAsset>;
   directory: FileSystemDirectoryHandle;
   effectiveName: string;
   selectedName: string;
@@ -27,6 +28,12 @@ export type ResolvedXmlFile = {
   handle: FileSystemFileHandle;
   selectedName: string;
   usedSubfolder: boolean;
+};
+
+export type CopyFileProgress = {
+  bytesCopied: number;
+  bytesTotal: number;
+  fileName: string;
 };
 
 const SOUNDTRACK_FOLDER_NAME = 'optional soundtrack samples';
@@ -163,6 +170,15 @@ export async function listRomAssets(
   return assets;
 }
 
+export async function listChdAssets(
+  directory: FileSystemDirectoryHandle,
+  options: { includeSubdirectories?: boolean } = {},
+) {
+  const assets = new Map<string, RomAsset>();
+  await addChdAssetsFromDirectory(directory, assets, options.includeSubdirectories ?? false, []);
+  return assets;
+}
+
 async function addRomAssetsFromDirectory(
   directory: FileSystemDirectoryHandle,
   assets: Map<string, RomAsset>,
@@ -170,8 +186,11 @@ async function addRomAssetsFromDirectory(
   pathParts: string[],
 ) {
   for await (const [name, handle] of directory.entries()) {
-    if (handle.kind === 'directory' && includeSubdirectories) {
-      await addRomAssetsFromDirectory(handle, assets, includeSubdirectories, [...pathParts, name]);
+    if (handle.kind === 'directory') {
+      if (includeSubdirectories && !(await directoryContainsChd(handle))) {
+        await addRomAssetsFromDirectory(handle, assets, includeSubdirectories, [...pathParts, name]);
+      }
+      continue;
     }
 
     const asset = await createAsset(name, handle, pathParts);
@@ -183,6 +202,33 @@ async function addRomAssetsFromDirectory(
     const existing = assets.get(key);
     if (!existing || compareAssetPriority(asset, existing) < 0) {
       assets.set(key, asset);
+    }
+  }
+}
+
+async function addChdAssetsFromDirectory(
+  directory: FileSystemDirectoryHandle,
+  assets: Map<string, RomAsset>,
+  includeSubdirectories: boolean,
+  pathParts: string[],
+) {
+  for await (const [name, handle] of directory.entries()) {
+    if (handle.kind !== 'directory') {
+      continue;
+    }
+
+    if (await directoryContainsChd(handle)) {
+      const asset = createChdAsset(name, handle, pathParts);
+      const key = asset.baseName.toLowerCase();
+      const existing = assets.get(key);
+      if (!existing || compareAssetPriority(asset, existing) < 0) {
+        assets.set(key, asset);
+      }
+      continue;
+    }
+
+    if (includeSubdirectories) {
+      await addChdAssetsFromDirectory(handle, assets, includeSubdirectories, [...pathParts, name]);
     }
   }
 }
@@ -211,8 +257,10 @@ export async function resolveRomDirectory(
   options: { preferRomsSubfolder?: boolean } = {},
 ): Promise<ResolvedRomDirectory> {
   if (directory.name.toLowerCase() === 'games') {
+    const { assets, chdAssets } = await listResolvedRomAssets(directory, true);
     return {
-      assets: await listRomAssets(directory, { includeSubdirectories: true }),
+      assets,
+      chdAssets,
       directory,
       effectiveName: directory.name,
       selectedName: directory.name,
@@ -223,10 +271,11 @@ export async function resolveRomDirectory(
   if (options.preferRomsSubfolder && directory.name.toLowerCase() !== 'roms') {
     const romsDirectory = await getChildDirectory(directory, 'roms');
     if (romsDirectory) {
-      const romsAssets = await listRomAssets(romsDirectory);
+      const { assets: romsAssets, chdAssets: romsChdAssets } = await listResolvedRomAssets(romsDirectory);
       if (romsAssets.size > 0) {
         return {
           assets: romsAssets,
+          chdAssets: romsChdAssets,
           directory: romsDirectory,
           effectiveName: romsDirectory.name,
           selectedName: directory.name,
@@ -238,10 +287,14 @@ export async function resolveRomDirectory(
 
   const gamesDirectory = await findRomSubfolder(directory, 'games');
   if (gamesDirectory) {
-    const gamesAssets = await listRomAssets(gamesDirectory.directory, { includeSubdirectories: true });
+    const { assets: gamesAssets, chdAssets: gamesChdAssets } = await listResolvedRomAssets(
+      gamesDirectory.directory,
+      true,
+    );
     if (gamesAssets.size > 0) {
       return {
         assets: gamesAssets,
+        chdAssets: gamesChdAssets,
         directory: gamesDirectory.directory,
         effectiveName: gamesDirectory.directory.name,
         selectedName: directory.name,
@@ -250,11 +303,12 @@ export async function resolveRomDirectory(
     }
   }
 
-  const assets = await listRomAssets(directory);
+  const { assets, chdAssets } = await listResolvedRomAssets(directory);
 
   if (assets.size > 0 || directory.name.toLowerCase() === 'roms') {
     return {
       assets,
+      chdAssets,
       directory,
       effectiveName: directory.name,
       selectedName: directory.name,
@@ -264,8 +318,10 @@ export async function resolveRomDirectory(
 
   const romsDirectory = await getChildDirectory(directory, 'roms');
   if (romsDirectory) {
+    const resolved = await listResolvedRomAssets(romsDirectory);
     return {
-      assets: await listRomAssets(romsDirectory),
+      assets: resolved.assets,
+      chdAssets: resolved.chdAssets,
       directory: romsDirectory,
       effectiveName: romsDirectory.name,
       selectedName: directory.name,
@@ -275,8 +331,10 @@ export async function resolveRomDirectory(
 
   const nestedRomsDirectory = await findRomSubfolder(directory, 'roms');
   if (nestedRomsDirectory) {
+    const resolved = await listResolvedRomAssets(nestedRomsDirectory.directory);
     return {
-      assets: await listRomAssets(nestedRomsDirectory.directory),
+      assets: resolved.assets,
+      chdAssets: resolved.chdAssets,
       directory: nestedRomsDirectory.directory,
       effectiveName: nestedRomsDirectory.directory.name,
       selectedName: directory.name,
@@ -286,6 +344,7 @@ export async function resolveRomDirectory(
 
   return {
     assets,
+    chdAssets,
     directory,
     effectiveName: directory.name,
     selectedName: directory.name,
@@ -390,14 +449,18 @@ export async function resolveSoundtrackDirectory(
   };
 }
 
-export async function copyAssetToDirectory(asset: RomAsset, target: FileSystemDirectoryHandle) {
+export async function copyAssetToDirectory(
+  asset: RomAsset,
+  target: FileSystemDirectoryHandle,
+  onProgress?: (progress: CopyFileProgress) => void,
+) {
   if (asset.kind === 'file') {
-    await copyFile(asset.handle as FileSystemFileHandle, target, asset.name);
+    await copyFile(asset.handle as FileSystemFileHandle, target, asset.name, asset.name, onProgress);
     return;
   }
 
   const destination = await target.getDirectoryHandle(asset.name, { create: true });
-  await copyDirectory(asset.handle as FileSystemDirectoryHandle, destination);
+  await copyDirectory(asset.handle as FileSystemDirectoryHandle, destination, onProgress, [asset.name]);
 }
 
 export async function removeAssetFromDirectory(asset: RomAsset, target: FileSystemDirectoryHandle) {
@@ -484,19 +547,7 @@ async function createAsset(
   const folder = pathParts[pathParts.length - 1] || '';
 
   if (handle.kind === 'directory') {
-    if (!(await directoryContainsChd(handle))) {
-      return null;
-    }
-
-    return {
-      baseName: name,
-      extension: '',
-      folder,
-      handle,
-      kind: 'directory',
-      name,
-      relativePath,
-    };
+    return null;
   }
 
   const { baseName, extension } = stripKnownExtension(name);
@@ -516,6 +567,50 @@ async function createAsset(
     size: file.size,
     updated: file.lastModified,
   };
+}
+
+function createChdAsset(
+  name: string,
+  handle: FileSystemDirectoryHandle,
+  pathParts: string[] = [],
+): RomAsset {
+  return {
+    baseName: name,
+    extension: '',
+    folder: pathParts[pathParts.length - 1] || '',
+    handle,
+    kind: 'directory',
+    name,
+    relativePath: [...pathParts, name].join('/'),
+  };
+}
+
+async function listResolvedRomAssets(
+  directory: FileSystemDirectoryHandle,
+  includeSubdirectories = false,
+) {
+  const [assets, chdAssets] = await Promise.all([
+    listRomAssets(directory, { includeSubdirectories }),
+    listChdAssets(directory, { includeSubdirectories }),
+  ]);
+
+  if (!includeSubdirectories && directory.name.toLowerCase() !== 'roms') {
+    const romsDirectory = await getChildDirectory(directory, 'roms');
+    if (romsDirectory) {
+      mergeAssets(chdAssets, await listChdAssets(romsDirectory));
+    }
+  }
+
+  return { assets, chdAssets };
+}
+
+function mergeAssets(target: Map<string, RomAsset>, source: Map<string, RomAsset>) {
+  for (const [key, asset] of source) {
+    const existing = target.get(key);
+    if (!existing || compareAssetPriority(asset, existing) < 0) {
+      target.set(key, asset);
+    }
+  }
 }
 
 async function createSampleAsset(
@@ -651,24 +746,54 @@ async function copyFile(
   source: FileSystemFileHandle,
   targetDirectory: FileSystemDirectoryHandle,
   fileName: string,
+  relativeName: string,
+  onProgress?: (progress: CopyFileProgress) => void,
 ) {
   const file = await source.getFile();
   const destination = await targetDirectory.getFileHandle(fileName, { create: true });
   const writable = await destination.createWritable();
-  await writable.write(file);
-  await writable.close();
+  const reader = file.stream().getReader();
+  let bytesCopied = 0;
+
+  onProgress?.({
+    bytesCopied,
+    bytesTotal: file.size,
+    fileName: relativeName,
+  });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      await writable.write(value);
+      bytesCopied += value.byteLength;
+      onProgress?.({
+        bytesCopied,
+        bytesTotal: file.size,
+        fileName: relativeName,
+      });
+    }
+  } finally {
+    reader.releaseLock();
+    await writable.close();
+  }
 }
 
 async function copyDirectory(
   source: FileSystemDirectoryHandle,
   target: FileSystemDirectoryHandle,
+  onProgress?: (progress: CopyFileProgress) => void,
+  pathParts: string[] = [],
 ) {
   for await (const [name, handle] of source.entries()) {
     if (handle.kind === 'directory') {
       const childTarget = await target.getDirectoryHandle(name, { create: true });
-      await copyDirectory(handle, childTarget);
+      await copyDirectory(handle, childTarget, onProgress, [...pathParts, name]);
     } else {
-      await copyFile(handle, target, name);
+      await copyFile(handle, target, name, [...pathParts, name].join('/'), onProgress);
     }
   }
 }

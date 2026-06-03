@@ -71,6 +71,7 @@ export type ParsedRom = {
   chipCount: number;
   deviceCount: number;
   diskCount: number;
+  diskNames: string[];
   dumpStatus: string;
   romCount: number;
   romSize: number;
@@ -79,6 +80,12 @@ export type ParsedRom = {
 
 export type RomEntry = ParsedRom & {
   available: boolean;
+  chdAsset?: RomAsset;
+  chdAssetName: string;
+  chdAvailable: boolean;
+  chdInTarget: boolean;
+  chdTargetAsset?: RomAsset;
+  chdTargetAssetName: string;
   counterpartAvailable: boolean;
   counterpartAsset?: RomAsset;
   counterpartAssetName: string;
@@ -139,4 +146,16 @@ export type SamplePlan = {
   items: SamplePlanItem[];
   missing: MissingSample[];
   required: MissingSample[];
+};
+
+export type ChdPlanItem = {
+  entry: RomEntry;
+  asset: RomAsset;
+};
+
+export type ChdPlan = {
+  alreadyPresent: RomEntry[];
+  items: ChdPlanItem[];
+  missing: RomEntry[];
+  required: RomEntry[];
 };

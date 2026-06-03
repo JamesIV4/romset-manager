@@ -6,7 +6,6 @@ import {
   CircleAlert,
   Copy,
   Database,
-  ExternalLink,
   FileCode2,
   FolderOpen,
   ListChecks,
@@ -20,6 +19,8 @@ import {
 } from "lucide-react";
 import {
   copyAssetToDirectory,
+  type CopyFileProgress,
+  listChdAssets,
   listSampleAssets,
   listRomAssets,
   loadHandles,
@@ -41,9 +42,10 @@ import {
   supportsFileSystemAccess,
   verifyPermission,
 } from "./lib/fileSystem";
-import { formatBytes, parseRomXml } from "./lib/mameParser";
+import { parseRomXml } from "./lib/mameParser";
 import {
   buildAssetBackedEntries,
+  buildChdPlan,
   buildCopyPlan,
   buildCounterpartPlan,
   buildMatchingSamplePlan,
@@ -52,9 +54,9 @@ import {
   buildSoundtrackPlan,
   enrichRomEntries,
   getRegionOptions,
-  getScreenscraperUrl,
 } from "./lib/romData";
 import type {
+  ChdPlan,
   CopyPlan,
   CounterpartPlanItem,
   ParentSwapPlanItem,
@@ -72,6 +74,7 @@ type ViewFilter =
   | "shared"
   | "counterpart"
   | "duplicates"
+  | "missingChds"
   | "nonParent"
   | "all"
   | "selected"
@@ -80,7 +83,10 @@ type SortKey = "title" | "region" | "year" | "manufacturer";
 type ManagedSetKey = "mame" | "mame287" | "fbneo";
 
 type CopyProgress = {
+  bytesCopied?: number;
+  bytesTotal?: number;
   current: number;
+  fileLabel?: string;
   total: number;
   label: string;
 };
@@ -254,6 +260,7 @@ const VIEW_OPTIONS: Array<{ key: ViewFilter; label: string }> = [
   { key: "shared", label: "Shared" },
   { key: "counterpart", label: "Counterpart" },
   { key: "duplicates", label: "In both sets" },
+  { key: "missingChds", label: "Missing CHDs" },
   { key: "nonParent", label: "Non-parent in set" },
   { key: "selected", label: "Selected" },
   { key: "unavailable", label: "No source" },
@@ -331,6 +338,9 @@ export function App() {
   const [fbneoAssets, setFbneoAssets] = useState<Map<string, RomAsset>>(
     new Map(),
   );
+  const [fbneoChdAssets, setFbneoChdAssets] = useState<Map<string, RomAsset>>(
+    new Map(),
+  );
   const [fbneoSampleSourceAssets, setFbneoSampleSourceAssets] = useState<
     Map<string, RomAsset>
   >(new Map());
@@ -340,12 +350,21 @@ export function App() {
   const [fbneoTargetAssets, setFbneoTargetAssets] = useState<
     Map<string, RomAsset>
   >(new Map());
+  const [fbneoTargetChdAssets, setFbneoTargetChdAssets] = useState<
+    Map<string, RomAsset>
+  >(new Map());
   const [fullAssets, setFullAssets] = useState<Map<string, RomAsset>>(
+    new Map(),
+  );
+  const [fullChdAssets, setFullChdAssets] = useState<Map<string, RomAsset>>(
     new Map(),
   );
   const [mame287Assets, setMame287Assets] = useState<Map<string, RomAsset>>(
     new Map(),
   );
+  const [mame287ChdAssets, setMame287ChdAssets] = useState<
+    Map<string, RomAsset>
+  >(new Map());
   const [mame287SampleSourceAssets, setMame287SampleSourceAssets] = useState<
     Map<string, RomAsset>
   >(new Map());
@@ -355,9 +374,15 @@ export function App() {
   const [mame287TargetAssets, setMame287TargetAssets] = useState<
     Map<string, RomAsset>
   >(new Map());
+  const [mame287TargetChdAssets, setMame287TargetChdAssets] = useState<
+    Map<string, RomAsset>
+  >(new Map());
   const [targetAssets, setTargetAssets] = useState<Map<string, RomAsset>>(
     new Map(),
   );
+  const [targetChdAssets, setTargetChdAssets] = useState<
+    Map<string, RomAsset>
+  >(new Map());
   const [sampleSourceAssets, setSampleSourceAssets] = useState<
     Map<string, RomAsset>
   >(new Map());
@@ -374,6 +399,7 @@ export function App() {
   const [sampleTargetDirectory, setSampleTargetDirectory] =
     useState<FileSystemDirectoryHandle | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [youtubeEntry, setYoutubeEntry] = useState<RomEntry | null>(null);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<ViewFilter>("missing");
   const [region, setRegion] = useState("all");
@@ -399,6 +425,8 @@ export function App() {
   const [duplicateRemoveProgress, setDuplicateRemoveProgress] =
     useState<CopyProgress | null>(null);
   const [sampleFixProgress, setSampleFixProgress] =
+    useState<CopyProgress | null>(null);
+  const [chdFixProgress, setChdFixProgress] =
     useState<CopyProgress | null>(null);
   const [lastPlan, setLastPlan] = useState<CopyPlan | null>(null);
   const [message, setMessage] = useState("");
@@ -575,12 +603,24 @@ export function App() {
       : activeIsMame287
         ? mame287Assets
         : fbneoAssets;
+  const activeChdAssets =
+    activeSet === "mame"
+      ? fullChdAssets
+      : activeIsMame287
+        ? mame287ChdAssets
+        : fbneoChdAssets;
   const activeTargetAssets =
     activeSet === "mame"
       ? targetAssets
       : activeIsMame287
         ? mame287TargetAssets
         : fbneoTargetAssets;
+  const activeTargetChdAssets =
+    activeSet === "mame"
+      ? targetChdAssets
+      : activeIsMame287
+        ? mame287TargetChdAssets
+        : fbneoTargetChdAssets;
   const activeMetadataEntries =
     activeSet === "mame"
       ? mameEntries
@@ -689,11 +729,15 @@ export function App() {
         activeTargetAssets,
         counterpartFullAssets,
         counterpartTargetAssets,
+        activeChdAssets,
+        activeTargetChdAssets,
       ),
     [
+      activeChdAssets,
       activeFullAssets,
       activeParsedEntries,
       activeTargetAssets,
+      activeTargetChdAssets,
       counterpartFullAssets,
       counterpartTargetAssets,
     ],
@@ -708,6 +752,11 @@ export function App() {
         includeDependencies,
       ),
     [activeTargetAssets, entries, includeDependencies, selectedIds],
+  );
+
+  const selectedChdPlan = useMemo<ChdPlan>(
+    () => buildChdPlan(selectedIds, entries),
+    [entries, selectedIds],
   );
 
   const selectedSamplePlan = useMemo<SamplePlan>(
@@ -800,6 +849,15 @@ export function App() {
   const selectedParentSwapPlan = useMemo(
     () => buildParentSwapPlan(selectedIds, entries),
     [entries, selectedIds],
+  );
+
+  const playSetChdPlan = useMemo<ChdPlan>(
+    () =>
+      buildChdPlan(
+        entries.filter((entry) => entry.inTarget).map((entry) => entry.id),
+        entries,
+      ),
+    [entries],
   );
 
   const playSetSamplePlan = useMemo<SamplePlan>(
@@ -961,6 +1019,10 @@ export function App() {
       sampleNeeded: selectedSamplePlan.required.length,
       sampleGaps:
         playSetSamplePlan.items.length + playSetSamplePlan.missing.length,
+      chdCopyable: selectedChdPlan.items.length,
+      chdGaps: playSetChdPlan.items.length + playSetChdPlan.missing.length,
+      missingPlaySetChds: playSetChdPlan.items.length,
+      missingPlaySetChdSources: playSetChdPlan.missing.length,
       missingPlaySetSamples: playSetSamplePlan.items.length,
       missingPlaySetSampleSources: playSetSamplePlan.missing.length,
       soundtrackCopyable: selectedSoundtrackPlan.items.length,
@@ -985,6 +1047,9 @@ export function App() {
     selectedDuplicateRemoveItems.length,
     selectedParentSwapPlan.length,
     selectedPlan.items.length,
+    selectedChdPlan.items.length,
+    playSetChdPlan.items.length,
+    playSetChdPlan.missing.length,
     playSetSamplePlan.items.length,
     playSetSamplePlan.missing.length,
     selectedRemoveItems.length,
@@ -1001,6 +1066,7 @@ export function App() {
         hideClones &&
         entry.cloneOf &&
         view !== "nonParent" &&
+        view !== "missingChds" &&
         view !== "duplicates"
       ) {
         return false;
@@ -1046,6 +1112,10 @@ export function App() {
         return entry.inTarget && entry.counterpartInTarget;
       }
 
+      if (view === "missingChds") {
+        return entry.inTarget && isChdRequired(entry) && !entry.chdInTarget;
+      }
+
       if (view === "nonParent") {
         return entry.inTarget && Boolean(entry.cloneOf);
       }
@@ -1086,15 +1156,18 @@ export function App() {
     Boolean(parentSwapProgress) ||
     Boolean(removeProgress) ||
     Boolean(duplicateRemoveProgress) ||
+    Boolean(chdFixProgress) ||
     Boolean(sampleFixProgress);
   const copyWorkCount =
     selectedPlan.items.length +
+    selectedChdPlan.items.length +
     selectedSamplePlan.items.length +
     selectedSoundtrackPlan.items.length;
   const counterpartWorkCount = selectedCounterpartPlan.length;
   const parentSwapWorkCount = selectedParentSwapPlan.length;
   const copySelectableCount =
     copyWorkCount ||
+    selectedChdPlan.required.length ||
     (includeSamples ? selectedSamplePlan.required.length : 0) ||
     (includeSoundtracks ? selectedSoundtrackPlan.required.length : 0);
 
@@ -1107,11 +1180,17 @@ export function App() {
         },
       );
       setFullAssets(source.assets);
+      setFullChdAssets(source.chdAssets);
       return;
     }
 
     if (key === "targetDir") {
-      setTargetAssets(await listRomAssets(handle as FileSystemDirectoryHandle));
+      const [assets, chdAssets] = await Promise.all([
+        listRomAssets(handle as FileSystemDirectoryHandle),
+        listChdAssets(handle as FileSystemDirectoryHandle),
+      ]);
+      setTargetAssets(assets);
+      setTargetChdAssets(chdAssets);
       return;
     }
 
@@ -1123,13 +1202,17 @@ export function App() {
         },
       );
       setFbneoAssets(source.assets);
+      setFbneoChdAssets(source.chdAssets);
       return;
     }
 
     if (key === "fbneoTargetDir") {
-      setFbneoTargetAssets(
-        await listRomAssets(handle as FileSystemDirectoryHandle),
-      );
+      const [assets, chdAssets] = await Promise.all([
+        listRomAssets(handle as FileSystemDirectoryHandle),
+        listChdAssets(handle as FileSystemDirectoryHandle),
+      ]);
+      setFbneoTargetAssets(assets);
+      setFbneoTargetChdAssets(chdAssets);
       return;
     }
 
@@ -1141,13 +1224,17 @@ export function App() {
         },
       );
       setMame287Assets(source.assets);
+      setMame287ChdAssets(source.chdAssets);
       return;
     }
 
     if (key === "mame287TargetDir") {
-      setMame287TargetAssets(
-        await listRomAssets(handle as FileSystemDirectoryHandle),
-      );
+      const [assets, chdAssets] = await Promise.all([
+        listRomAssets(handle as FileSystemDirectoryHandle),
+        listChdAssets(handle as FileSystemDirectoryHandle),
+      ]);
+      setMame287TargetAssets(assets);
+      setMame287TargetChdAssets(chdAssets);
       return;
     }
 
@@ -1389,11 +1476,16 @@ export function App() {
             );
           }
 
-          const [fbneoSource, nextFbneoTargetAssets] = await Promise.all([
+          const [
+            fbneoSource,
+            nextFbneoTargetAssets,
+            nextFbneoTargetChdAssets,
+          ] = await Promise.all([
             resolveRomDirectory(handles.fbneoFullDir!, {
               preferRomsSubfolder: true,
             }),
             listRomAssets(handles.fbneoTargetDir!),
+            listChdAssets(handles.fbneoTargetDir!),
           ]);
           if (fbneoSource.assets.size === 0) {
             setSourceStatuses((current) => ({
@@ -1432,10 +1524,12 @@ export function App() {
           );
 
           setFbneoAssets(fbneoSource.assets);
+          setFbneoChdAssets(fbneoSource.chdAssets);
           setFbneoSampleSourceAssets(fbneoSampleSource.assets);
           setFbneoSampleTargetAssets(fbneoSampleTarget.assets);
           setFbneoSampleTargetDirectory(fbneoSampleTarget.directory);
           setFbneoTargetAssets(nextFbneoTargetAssets);
+          setFbneoTargetChdAssets(nextFbneoTargetChdAssets);
           setFbneoEntries(nextEntries);
           setSourceStatuses((current) => ({
             ...current,
@@ -1447,7 +1541,7 @@ export function App() {
             fbneoTargetDir: {
               detail:
                 nextFbneoTargetAssets.size > 0
-                  ? `${nextFbneoTargetAssets.size.toLocaleString()} ROM item${nextFbneoTargetAssets.size === 1 ? "" : "s"} found in the FBNeo playing set.`
+                  ? `${nextFbneoTargetAssets.size.toLocaleString()} ROM item${nextFbneoTargetAssets.size === 1 ? "" : "s"} and ${nextFbneoTargetChdAssets.size.toLocaleString()} CHD folder${nextFbneoTargetChdAssets.size === 1 ? "" : "s"} found in the FBNeo playing set.`
                   : "No ROMs found yet. This FBNeo playing-set folder can still receive copied ROMs.",
               selectedName: handles.fbneoTargetDir?.name,
               state: nextFbneoTargetAssets.size > 0 ? "ready" : "warning",
@@ -1486,10 +1580,12 @@ export function App() {
           );
         }
 
-        const [autoXmlFile, fullSource, nextTargetAssets] = await Promise.all([
+        const [autoXmlFile, fullSource, nextTargetAssets, nextTargetChdAssets] =
+          await Promise.all([
           resolveXmlFile(fullDir),
           resolveRomDirectory(fullDir, { preferRomsSubfolder: true }),
           listRomAssets(targetDir),
+          listChdAssets(targetDir),
         ]);
         const [sampleSource, sampleTarget, soundtrackSource] =
           await Promise.all([
@@ -1556,14 +1652,18 @@ export function App() {
         if (activeIsMame287) {
           setMame287Entries(nextEntries);
           setMame287Assets(nextFullAssets);
+          setMame287ChdAssets(fullSource.chdAssets);
           setMame287TargetAssets(nextTargetAssets);
+          setMame287TargetChdAssets(nextTargetChdAssets);
           setMame287SampleSourceAssets(sampleSource.assets);
           setMame287SampleTargetAssets(sampleTarget.assets);
           setMame287SampleTargetDirectory(sampleTarget.directory);
         } else {
           setMameEntries(nextEntries);
           setFullAssets(nextFullAssets);
+          setFullChdAssets(fullSource.chdAssets);
           setTargetAssets(nextTargetAssets);
+          setTargetChdAssets(nextTargetChdAssets);
           setSampleSourceAssets(sampleSource.assets);
           setSampleTargetAssets(sampleTarget.assets);
           setSampleTargetDirectory(sampleTarget.directory);
@@ -1583,7 +1683,7 @@ export function App() {
           [activeIsMame287 ? "mame287TargetDir" : "targetDir"]: {
             detail:
               nextTargetAssets.size > 0
-                ? `${nextTargetAssets.size.toLocaleString()} ROM item${nextTargetAssets.size === 1 ? "" : "s"} found in the playing set.`
+                ? `${nextTargetAssets.size.toLocaleString()} ROM item${nextTargetAssets.size === 1 ? "" : "s"} and ${nextTargetChdAssets.size.toLocaleString()} CHD folder${nextTargetChdAssets.size === 1 ? "" : "s"} found in the playing set.`
                 : "No ROMs found yet. This playing-set folder can still receive copied ROMs.",
             selectedName: targetDir.name,
             state: nextTargetAssets.size > 0 ? "ready" : "warning",
@@ -1700,6 +1800,7 @@ export function App() {
       activeTargetAssets,
       includeDependencies,
     );
+    const chdPlan = buildChdPlan(selectedIds, entries);
     const possibleSamplePlan =
       activeSet === "mame"
         ? buildSamplePlan(
@@ -1774,6 +1875,13 @@ export function App() {
     let copySamplePlan = samplePlan;
     let copySoundtrackPlan = soundtrackPlan;
 
+    if (chdPlan.missing.length > 0) {
+      const missing = chdPlan.missing.map((entry) => entry.id).join(", ");
+      optionalNotes.push(
+        `CHD folder${chdPlan.missing.length === 1 ? "" : "s"} unavailable: ${missing}`,
+      );
+    }
+
     if (shouldCopySamples && samplePlan.required.length > 0) {
       if (activeSampleSourceAssets.size === 0) {
         optionalNotes.push("samples skipped: choose a sample source folder");
@@ -1814,6 +1922,7 @@ export function App() {
 
     if (
       plan.items.length === 0 &&
+      chdPlan.items.length === 0 &&
       copySamplePlan.items.length === 0 &&
       copySoundtrackPlan.items.length === 0
     ) {
@@ -1843,57 +1952,90 @@ export function App() {
         );
       }
 
+      const totalCopyItems =
+        plan.items.length +
+        chdPlan.items.length +
+        copySamplePlan.items.length +
+        copySoundtrackPlan.items.length;
+
       for (let index = 0; index < plan.items.length; index += 1) {
         const item = plan.items[index];
-        setCopyProgress({
+        const progress = {
           current: index + 1,
-          total:
-            plan.items.length +
-            copySamplePlan.items.length +
-            copySoundtrackPlan.items.length,
+          total: totalCopyItems,
           label: item.asset.name,
-        });
-        await copyAssetToDirectory(item.asset, targetDir);
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          targetDir,
+          withTransferProgress(setCopyProgress, progress),
+        );
+      }
+
+      for (let index = 0; index < chdPlan.items.length; index += 1) {
+        const item = chdPlan.items[index];
+        const progress = {
+          current: plan.items.length + index + 1,
+          total: totalCopyItems,
+          label: item.asset.name,
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          targetDir,
+          withTransferProgress(setCopyProgress, progress),
+        );
       }
 
       for (let index = 0; index < copySamplePlan.items.length; index += 1) {
         const item = copySamplePlan.items[index];
-        setCopyProgress({
-          current: plan.items.length + index + 1,
-          total:
-            plan.items.length +
-            copySamplePlan.items.length +
-            copySoundtrackPlan.items.length,
+        const progress = {
+          current: plan.items.length + chdPlan.items.length + index + 1,
+          total: totalCopyItems,
           label: item.asset.name,
-        });
-        await copyAssetToDirectory(item.asset, samplesDir!);
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          samplesDir!,
+          withTransferProgress(setCopyProgress, progress),
+        );
       }
 
       for (let index = 0; index < copySoundtrackPlan.items.length; index += 1) {
         const item = copySoundtrackPlan.items[index];
-        setCopyProgress({
-          current: plan.items.length + copySamplePlan.items.length + index + 1,
-          total:
+        const progress = {
+          current:
             plan.items.length +
+            chdPlan.items.length +
             copySamplePlan.items.length +
-            copySoundtrackPlan.items.length,
+            index +
+            1,
+          total: totalCopyItems,
           label: item.asset.name,
-        });
-        await copyAssetToDirectory(item.asset, samplesDir!);
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          samplesDir!,
+          withTransferProgress(setCopyProgress, progress),
+        );
       }
 
-      const [refreshedTargetAssets, refreshedSampleAssets] = await Promise.all([
-        listRomAssets(targetDir),
-        samplesDir
-          ? listSampleAssets(samplesDir)
-          : Promise.resolve(activeSampleTargetAssets),
-      ]);
+      const [refreshedTargetAssets, refreshedTargetChdAssets, refreshedSampleAssets] =
+        await Promise.all([
+          listRomAssets(targetDir),
+          listChdAssets(targetDir),
+          samplesDir
+            ? listSampleAssets(samplesDir)
+            : Promise.resolve(activeSampleTargetAssets),
+        ]);
       if (activeSet === "mame") {
         setTargetAssets(refreshedTargetAssets);
+        setTargetChdAssets(refreshedTargetChdAssets);
       } else if (activeIsMame287) {
         setMame287TargetAssets(refreshedTargetAssets);
+        setMame287TargetChdAssets(refreshedTargetChdAssets);
       } else {
         setFbneoTargetAssets(refreshedTargetAssets);
+        setFbneoTargetChdAssets(refreshedTargetChdAssets);
       }
       if (activeSet === "mame") {
         setSampleTargetAssets(refreshedSampleAssets);
@@ -1905,7 +2047,7 @@ export function App() {
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} and ${refreshedTargetChdAssets.size.toLocaleString()} CHD folder${refreshedTargetChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
           selectedName: targetDir.name,
           state: "ready",
         },
@@ -1921,6 +2063,8 @@ export function App() {
         const copied = new Set([
           ...plan.items.map((item) => item.entry.id),
           ...plan.alreadyPresent.map((entry) => entry.id),
+          ...chdPlan.items.map((item) => item.entry.id),
+          ...chdPlan.alreadyPresent.map((entry) => entry.id),
           ...copySamplePlan.items.map((item) => item.entry.id),
           ...samplePlan.alreadyPresent.map((item) => item.entry.id),
           ...copySoundtrackPlan.items.map((item) => item.entry.id),
@@ -1929,14 +2073,15 @@ export function App() {
         return new Set([...current].filter((id) => !copied.has(id)));
       });
       const romText = `${plan.items.length.toLocaleString()} ROM item${plan.items.length === 1 ? "" : "s"}`;
+      const chdText = `${chdPlan.items.length.toLocaleString()} CHD folder${chdPlan.items.length === 1 ? "" : "s"}`;
       const sampleText = `${copySamplePlan.items.length.toLocaleString()} sample pack${copySamplePlan.items.length === 1 ? "" : "s"}`;
       const soundtrackText = `${copySoundtrackPlan.items.length.toLocaleString()} OST pack${copySoundtrackPlan.items.length === 1 ? "" : "s"}`;
       const copiedText =
         activeSet === "fbneo"
-          ? `${romText} copied.`
+          ? `${romText} and ${chdText} copied.`
           : activeSet === "mame" && includeSoundtracks
-            ? `${romText}, ${sampleText}, and ${soundtrackText} copied.`
-            : `${romText} and ${sampleText} copied.`;
+            ? `${romText}, ${chdText}, ${sampleText}, and ${soundtrackText} copied.`
+            : `${romText}, ${chdText}, and ${sampleText} copied.`;
       setMessage([copiedText, ...optionalNotes].join(" "));
     } catch (caught) {
       setError(getErrorMessage(caught));
@@ -2011,19 +2156,29 @@ export function App() {
 
       for (let index = 0; index < plan.length; index += 1) {
         const item = plan[index];
-        setCounterpartProgress({
+        const progress = {
           current: index + 1,
           total: plan.length,
           label: item.sourceAsset.name,
-        });
-        await copyAssetToDirectory(item.sourceAsset, item.targetDirectory);
+        };
+        await copyAssetToDirectory(
+          item.sourceAsset,
+          item.targetDirectory,
+          withTransferProgress(setCounterpartProgress, progress),
+        );
       }
 
-      const [afterCopyActiveAssets, afterCopyCounterpartAssets] =
-        await Promise.all([
-          listRomAssets(activeTargetDir),
-          listRomAssets(counterpartTargetDir),
-        ]);
+      const [
+        afterCopyActiveAssets,
+        afterCopyActiveChdAssets,
+        afterCopyCounterpartAssets,
+        afterCopyCounterpartChdAssets,
+      ] = await Promise.all([
+        listRomAssets(activeTargetDir),
+        listChdAssets(activeTargetDir),
+        listRomAssets(counterpartTargetDir),
+        listChdAssets(counterpartTargetDir),
+      ]);
       const removals = removeOriginalAfterCounterpartCopy
         ? getVerifiedCounterpartRemovals(
             plan,
@@ -2042,25 +2197,42 @@ export function App() {
         await removeAssetFromDirectory(item.asset, item.target);
       }
 
-      const [refreshedActiveAssets, refreshedCounterpartTargetAssets] =
+      const [
+        refreshedActiveAssets,
+        refreshedActiveChdAssets,
+        refreshedCounterpartTargetAssets,
+        refreshedCounterpartTargetChdAssets,
+      ] =
         removals.length > 0
           ? await Promise.all([
               listRomAssets(activeTargetDir),
+              listChdAssets(activeTargetDir),
               listRomAssets(counterpartTargetDir),
+              listChdAssets(counterpartTargetDir),
             ])
-          : [afterCopyActiveAssets, afterCopyCounterpartAssets];
+          : [
+              afterCopyActiveAssets,
+              afterCopyActiveChdAssets,
+              afterCopyCounterpartAssets,
+              afterCopyCounterpartChdAssets,
+            ];
 
       setManagedTargetAssets(activeSet, refreshedActiveAssets);
+      setManagedTargetChdAssets(activeSet, refreshedActiveChdAssets);
       setManagedTargetAssets(counterpartSet, refreshedCounterpartTargetAssets);
+      setManagedTargetChdAssets(
+        counterpartSet,
+        refreshedCounterpartTargetChdAssets,
+      );
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
-          detail: `${refreshedActiveAssets.size.toLocaleString()} ROM item${refreshedActiveAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          detail: `${refreshedActiveAssets.size.toLocaleString()} ROM item${refreshedActiveAssets.size === 1 ? "" : "s"} and ${refreshedActiveChdAssets.size.toLocaleString()} CHD folder${refreshedActiveChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
           selectedName: activeTargetDir.name,
           state: "ready",
         },
         [counterpartTargetSourceKey]: {
-          detail: `${refreshedCounterpartTargetAssets.size.toLocaleString()} ROM item${refreshedCounterpartTargetAssets.size === 1 ? "" : "s"} found in the ${counterpartSetOption.label} playing set.`,
+          detail: `${refreshedCounterpartTargetAssets.size.toLocaleString()} ROM item${refreshedCounterpartTargetAssets.size === 1 ? "" : "s"} and ${refreshedCounterpartTargetChdAssets.size.toLocaleString()} CHD folder${refreshedCounterpartTargetChdAssets.size === 1 ? "" : "s"} found in the ${counterpartSetOption.label} playing set.`,
           selectedName: counterpartTargetDir.name,
           state: "ready",
         },
@@ -2146,12 +2318,16 @@ export function App() {
       const copyItems = [...parentAssets.values()];
       for (let index = 0; index < copyItems.length; index += 1) {
         const asset = copyItems[index];
-        setParentSwapProgress({
+        const progress = {
           current: index + 1,
           total: copyItems.length + plan.length,
           label: `Copying parent: ${asset.name}`,
-        });
-        await copyAssetToDirectory(asset, activeTargetDir);
+        };
+        await copyAssetToDirectory(
+          asset,
+          activeTargetDir,
+          withTransferProgress(setParentSwapProgress, progress),
+        );
       }
 
       const afterCopyAssets =
@@ -2169,15 +2345,19 @@ export function App() {
         await removeAssetFromDirectory(item.removeAsset, activeTargetDir);
       }
 
-      const refreshedTargetAssets =
+      const [refreshedTargetAssets, refreshedTargetChdAssets] =
         removals.length > 0
-          ? await listRomAssets(activeTargetDir)
-          : afterCopyAssets;
+          ? await Promise.all([
+              listRomAssets(activeTargetDir),
+              listChdAssets(activeTargetDir),
+            ])
+          : [afterCopyAssets, await listChdAssets(activeTargetDir)];
       setManagedTargetAssets(activeSet, refreshedTargetAssets);
+      setManagedTargetChdAssets(activeSet, refreshedTargetChdAssets);
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} and ${refreshedTargetChdAssets.size.toLocaleString()} CHD folder${refreshedTargetChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
           selectedName: activeTargetDir.name,
           state: "ready",
         },
@@ -2248,12 +2428,16 @@ export function App() {
 
       for (let index = 0; index < playSetSamplePlan.items.length; index += 1) {
         const item = playSetSamplePlan.items[index];
-        setSampleFixProgress({
+        const progress = {
           current: index + 1,
           total: playSetSamplePlan.items.length,
           label: item.asset.name,
-        });
-        await copyAssetToDirectory(item.asset, activeSampleTargetDirectory);
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          activeSampleTargetDirectory,
+          withTransferProgress(setSampleFixProgress, progress),
+        );
       }
 
       const refreshedSampleAssets = await listSampleAssets(
@@ -2288,6 +2472,88 @@ export function App() {
     activeSampleTargetDirectory,
     activeSampleTargetSourceKey,
     playSetSamplePlan,
+  ]);
+
+  const fixPlaySetChds = useCallback(async () => {
+    if (playSetChdPlan.required.length === 0) {
+      setMessage("No CHD folders are required by the current playing set.");
+      return;
+    }
+
+    if (playSetChdPlan.items.length === 0) {
+      if (playSetChdPlan.missing.length > 0) {
+        const missing = playSetChdPlan.missing
+          .map((entry) => entry.id)
+          .join(", ");
+        setError(
+          `The playing set needs CHD folders that were not found in the ${activeSetOption.label} full set: ${missing}.`,
+        );
+      } else {
+        setMessage("All required playing-set CHD folders are present.");
+      }
+      return;
+    }
+
+    if (!activeTargetDir) {
+      setError("Choose a playing set folder before fixing CHDs.");
+      return;
+    }
+
+    try {
+      setError("");
+      const targetAllowed = await verifyPermission(
+        activeTargetDir,
+        "readwrite",
+      );
+      if (!targetAllowed) {
+        throw new Error(
+          "The browser did not receive write permission for the playing set.",
+        );
+      }
+
+      for (let index = 0; index < playSetChdPlan.items.length; index += 1) {
+        const item = playSetChdPlan.items[index];
+        const progress = {
+          current: index + 1,
+          total: playSetChdPlan.items.length,
+          label: item.asset.name,
+        };
+        await copyAssetToDirectory(
+          item.asset,
+          activeTargetDir,
+          withTransferProgress(setChdFixProgress, progress),
+        );
+      }
+
+      const [refreshedTargetAssets, refreshedTargetChdAssets] =
+        await Promise.all([
+          listRomAssets(activeTargetDir),
+          listChdAssets(activeTargetDir),
+        ]);
+      setManagedTargetAssets(activeSet, refreshedTargetAssets);
+      setManagedTargetChdAssets(activeSet, refreshedTargetChdAssets);
+      setSourceStatuses((current) => ({
+        ...current,
+        [activeTargetSourceKey]: {
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} and ${refreshedTargetChdAssets.size.toLocaleString()} CHD folder${refreshedTargetChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          selectedName: activeTargetDir.name,
+          state: "ready",
+        },
+      }));
+      setMessage(
+        `${playSetChdPlan.items.length.toLocaleString()} missing playing-set CHD folder${playSetChdPlan.items.length === 1 ? "" : "s"} copied.`,
+      );
+    } catch (caught) {
+      setError(getErrorMessage(caught));
+    } finally {
+      setChdFixProgress(null);
+    }
+  }, [
+    activeSet,
+    activeSetOption.label,
+    activeTargetDir,
+    activeTargetSourceKey,
+    playSetChdPlan,
   ]);
 
   const removeSelected = useCallback(async () => {
@@ -2330,18 +2596,25 @@ export function App() {
         await removeAssetFromDirectory(item.asset, activeTargetDir);
       }
 
-      const refreshedTargetAssets = await listRomAssets(activeTargetDir);
+      const [refreshedTargetAssets, refreshedTargetChdAssets] =
+        await Promise.all([
+          listRomAssets(activeTargetDir),
+          listChdAssets(activeTargetDir),
+        ]);
       if (activeSet === "mame") {
         setTargetAssets(refreshedTargetAssets);
+        setTargetChdAssets(refreshedTargetChdAssets);
       } else if (activeIsMame287) {
         setMame287TargetAssets(refreshedTargetAssets);
+        setMame287TargetChdAssets(refreshedTargetChdAssets);
       } else {
         setFbneoTargetAssets(refreshedTargetAssets);
+        setFbneoTargetChdAssets(refreshedTargetChdAssets);
       }
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} and ${refreshedTargetChdAssets.size.toLocaleString()} CHD folder${refreshedTargetChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
           selectedName: activeTargetDir.name,
           state: "ready",
         },
@@ -2423,12 +2696,17 @@ export function App() {
         await removeAssetFromDirectory(item.asset, activeTargetDir);
       }
 
-      const refreshedTargetAssets = await listRomAssets(activeTargetDir);
+      const [refreshedTargetAssets, refreshedTargetChdAssets] =
+        await Promise.all([
+          listRomAssets(activeTargetDir),
+          listChdAssets(activeTargetDir),
+        ]);
       setManagedTargetAssets(activeSet, refreshedTargetAssets);
+      setManagedTargetChdAssets(activeSet, refreshedTargetChdAssets);
       setSourceStatuses((current) => ({
         ...current,
         [activeTargetSourceKey]: {
-          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
+          detail: `${refreshedTargetAssets.size.toLocaleString()} ROM item${refreshedTargetAssets.size === 1 ? "" : "s"} and ${refreshedTargetChdAssets.size.toLocaleString()} CHD folder${refreshedTargetChdAssets.size === 1 ? "" : "s"} found in the ${activeSetOption.label} playing set.`,
           selectedName: activeTargetDir.name,
           state: "ready",
         },
@@ -2503,6 +2781,19 @@ export function App() {
     }
   }
 
+  function setManagedTargetChdAssets(
+    set: ManagedSetKey,
+    assets: Map<string, RomAsset>,
+  ) {
+    if (set === "mame") {
+      setTargetChdAssets(assets);
+    } else if (set === "mame287") {
+      setMame287TargetChdAssets(assets);
+    } else {
+      setFbneoTargetChdAssets(assets);
+    }
+  }
+
   function setManagedFullAssets(
     set: ManagedSetKey,
     assets: Map<string, RomAsset>,
@@ -2513,6 +2804,19 @@ export function App() {
       setMame287Assets(assets);
     } else {
       setFbneoAssets(assets);
+    }
+  }
+
+  function setManagedFullChdAssets(
+    set: ManagedSetKey,
+    assets: Map<string, RomAsset>,
+  ) {
+    if (set === "mame") {
+      setFullChdAssets(assets);
+    } else if (set === "mame287") {
+      setMame287ChdAssets(assets);
+    } else {
+      setFbneoChdAssets(assets);
     }
   }
 
@@ -2550,12 +2854,15 @@ export function App() {
       return;
     }
 
-    const [fullSource, targetAssets] = await Promise.all([
+    const [fullSource, targetAssets, targetChdAssets] = await Promise.all([
       resolveRomDirectory(counterpartFullDir, { preferRomsSubfolder: true }),
       listRomAssets(counterpartTargetDir),
+      listChdAssets(counterpartTargetDir),
     ]);
     setManagedFullAssets(counterpartSet, fullSource.assets);
+    setManagedFullChdAssets(counterpartSet, fullSource.chdAssets);
     setManagedTargetAssets(counterpartSet, targetAssets);
+    setManagedTargetChdAssets(counterpartSet, targetChdAssets);
     setSourceStatuses((current) => ({
       ...current,
       [counterpartFullSourceKey]: {
@@ -2573,7 +2880,7 @@ export function App() {
       [counterpartTargetSourceKey]: {
         detail:
           targetAssets.size > 0
-            ? `${targetAssets.size.toLocaleString()} ROM item${targetAssets.size === 1 ? "" : "s"} found in the ${counterpartSetOption.label} playing set.`
+            ? `${targetAssets.size.toLocaleString()} ROM item${targetAssets.size === 1 ? "" : "s"} and ${targetChdAssets.size.toLocaleString()} CHD folder${targetChdAssets.size === 1 ? "" : "s"} found in the ${counterpartSetOption.label} playing set.`
             : `No ROMs found yet. This ${counterpartSetOption.label} playing-set folder can still receive copied ROMs.`,
         selectedName: counterpartTargetDir.name,
         state: targetAssets.size > 0 ? "ready" : "warning",
@@ -2672,11 +2979,30 @@ export function App() {
             </span>
           </button>
           <button
+            className="button secondary"
+            type="button"
+            onClick={fixPlaySetChds}
+            disabled={playSetChdPlan.items.length === 0 || isBusy}
+            title={`${playSetChdPlan.items.length.toLocaleString()} missing CHD folder${playSetChdPlan.items.length === 1 ? "" : "s"} can be copied; ${playSetChdPlan.missing.length.toLocaleString()} missing from source`}
+          >
+            {chdFixProgress ? (
+              <Loader2 className="spin" aria-hidden="true" />
+            ) : (
+              <PackageOpen aria-hidden="true" />
+            )}
+            <span>
+              Fix CHDs{" "}
+              {playSetChdPlan.items.length > 0
+                ? playSetChdPlan.items.length.toLocaleString()
+                : ""}
+            </span>
+          </button>
+          <button
             className="button primary"
             type="button"
             onClick={copySelected}
             disabled={copySelectableCount === 0 || isBusy}
-            title={`${selectedPlan.items.length.toLocaleString()} ROM item${selectedPlan.items.length === 1 ? "" : "s"}, ${selectedSamplePlan.items.length.toLocaleString()} sample pack${selectedSamplePlan.items.length === 1 ? "" : "s"}, and ${selectedSoundtrackPlan.items.length.toLocaleString()} OST pack${selectedSoundtrackPlan.items.length === 1 ? "" : "s"} ready`}
+            title={`${selectedPlan.items.length.toLocaleString()} ROM item${selectedPlan.items.length === 1 ? "" : "s"}, ${selectedChdPlan.items.length.toLocaleString()} CHD folder${selectedChdPlan.items.length === 1 ? "" : "s"}, ${selectedSamplePlan.items.length.toLocaleString()} sample pack${selectedSamplePlan.items.length === 1 ? "" : "s"}, and ${selectedSoundtrackPlan.items.length.toLocaleString()} OST pack${selectedSoundtrackPlan.items.length === 1 ? "" : "s"} ready`}
           >
             {copyProgress ? (
               <Loader2 className="spin" aria-hidden="true" />
@@ -2824,6 +3150,12 @@ export function App() {
           value={stats.sampleGaps}
           tone={stats.sampleGaps > 0 ? "warn" : "good"}
         />
+        <Metric label="CHDs" value={stats.chdCopyable} tone="action" />
+        <Metric
+          label="CHD gaps"
+          value={stats.chdGaps}
+          tone={stats.chdGaps > 0 ? "warn" : "good"}
+        />
         <Metric label="OST" value={stats.soundtrackCopyable} tone="action" />
         <Metric label="Removable" value={stats.removable} tone="danger" />
         <Metric label="Full extras" value={stats.fullUnmatched} />
@@ -2838,20 +3170,21 @@ export function App() {
         <div className="toolbar">
           <DebouncedSearchBox value={query} onChange={setQuery} />
 
-          <div className="segmented" aria-label="View">
-            {VIEW_OPTIONS.map((option) => (
-              <button
-                key={option.key}
-                className={view === option.key ? "active" : ""}
-                type="button"
-                onClick={() => setView(option.key)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-
           <div className="toolbar-selects">
+            <label>
+              <span>View</span>
+              <select
+                value={view}
+                onChange={(event) => setView(event.target.value as ViewFilter)}
+              >
+                {VIEW_OPTIONS.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <label>
               <span>Region</span>
               <select
@@ -2963,47 +3296,18 @@ export function App() {
         </div>
 
         {copyProgress ? (
-          <div className="copy-progress">
-            <div>
-              <strong>
-                Copying {copyProgress.current} of {copyProgress.total}
-              </strong>
-              <span>{copyProgress.label}</span>
-            </div>
-            <progress value={copyProgress.current} max={copyProgress.total} />
-          </div>
+          <CopyProgressPanel progress={copyProgress} title="Copying" />
         ) : null}
 
         {counterpartProgress ? (
-          <div className="copy-progress">
-            <div>
-              <strong>
-                Swapping {counterpartProgress.current} of{" "}
-                {counterpartProgress.total}
-              </strong>
-              <span>{counterpartProgress.label}</span>
-            </div>
-            <progress
-              value={counterpartProgress.current}
-              max={counterpartProgress.total}
-            />
-          </div>
+          <CopyProgressPanel progress={counterpartProgress} title="Swapping" />
         ) : null}
 
         {parentSwapProgress ? (
-          <div className="copy-progress">
-            <div>
-              <strong>
-                Swapping to parent {parentSwapProgress.current} of{" "}
-                {parentSwapProgress.total}
-              </strong>
-              <span>{parentSwapProgress.label}</span>
-            </div>
-            <progress
-              value={parentSwapProgress.current}
-              max={parentSwapProgress.total}
-            />
-          </div>
+          <CopyProgressPanel
+            progress={parentSwapProgress}
+            title="Swapping to parent"
+          />
         ) : null}
 
         {removeProgress ? (
@@ -3039,19 +3343,14 @@ export function App() {
         ) : null}
 
         {sampleFixProgress ? (
-          <div className="copy-progress">
-            <div>
-              <strong>
-                Fixing samples {sampleFixProgress.current} of{" "}
-                {sampleFixProgress.total}
-              </strong>
-              <span>{sampleFixProgress.label}</span>
-            </div>
-            <progress
-              value={sampleFixProgress.current}
-              max={sampleFixProgress.total}
-            />
-          </div>
+          <CopyProgressPanel
+            progress={sampleFixProgress}
+            title="Fixing samples"
+          />
+        ) : null}
+
+        {chdFixProgress ? (
+          <CopyProgressPanel progress={chdFixProgress} title="Fixing CHDs" />
         ) : null}
 
         {playSetSamplePlan.items.length > 0 ||
@@ -3126,6 +3425,19 @@ export function App() {
           </div>
         ) : null}
 
+        {playSetChdPlan.items.length > 0 ||
+        playSetChdPlan.missing.length > 0 ? (
+          <div className="plan-note">
+            <PackageOpen aria-hidden="true" />
+            <span>
+              Playing set CHD gaps: {playSetChdPlan.items.length} fixable
+              {playSetChdPlan.missing.length > 0
+                ? ` - ${playSetChdPlan.missing.length} missing from ${activeSetOption.label} full set`
+                : ""}
+            </span>
+          </div>
+        ) : null}
+
         {includeSamples && selectedSamplePlan.required.length > 0 ? (
           <div className="plan-note">
             <PackageOpen aria-hidden="true" />
@@ -3143,6 +3455,28 @@ export function App() {
               {selectedSamplePlan.items.length === 0 &&
               selectedSamplePlan.missing.length === 0
                 ? `${selectedSamplePlan.alreadyPresent.length} sample already present`
+                : ""}
+            </span>
+          </div>
+        ) : null}
+
+        {selectedChdPlan.required.length > 0 ? (
+          <div className="plan-note">
+            <PackageOpen aria-hidden="true" />
+            <span>
+              {selectedChdPlan.items.length > 0
+                ? `${selectedChdPlan.items.length} CHD folder copyable`
+                : ""}
+              {selectedChdPlan.items.length > 0 &&
+              selectedChdPlan.missing.length > 0
+                ? " - "
+                : ""}
+              {selectedChdPlan.missing.length > 0
+                ? `${selectedChdPlan.missing.length} missing CHD source`
+                : ""}
+              {selectedChdPlan.items.length === 0 &&
+              selectedChdPlan.missing.length === 0
+                ? `${selectedChdPlan.alreadyPresent.length} CHD folder already present`
                 : ""}
             </span>
           </div>
@@ -3170,6 +3504,13 @@ export function App() {
           </div>
         ) : null}
 
+        {youtubeEntry ? (
+          <YoutubeSearchPanel
+            entry={youtubeEntry}
+            onClose={() => setYoutubeEntry(null)}
+          />
+        ) : null}
+
         <RomTable
           activeLabel={activeSetOption.shortLabel}
           counterpartLabel={counterpartSetOption.shortLabel}
@@ -3177,6 +3518,7 @@ export function App() {
           sampleSourceAssets={activeSampleSourceAssets}
           sampleTargetAssets={activeSampleTargetAssets}
           selectedIds={selectedIds}
+          onOpenYoutube={setYoutubeEntry}
           onToggle={toggleSelected}
         />
       </section>
@@ -3238,6 +3580,181 @@ function InlineError({
       </button>
     </div>
   );
+}
+
+function YoutubeSearchPanel({
+  entry,
+  onClose,
+}: {
+  entry: RomEntry;
+  onClose: () => void;
+}) {
+  const [resultIndex, setResultIndex] = useState(0);
+  const query = `${getYoutubeSearchTitle(entry)} arcade`;
+  const youtubeUrl = getYoutubeSearchEmbedUrl(query, resultIndex);
+  const youtubeSearchUrl = getYoutubeSearchUrl(query);
+  const resultIndexes = Array.from({ length: 8 }, (_, index) => index);
+
+  useEffect(() => {
+    setResultIndex(0);
+  }, [query]);
+
+  function moveResult(offset: number) {
+    setResultIndex((current) => {
+      const next = current + offset;
+      if (next < 0) {
+        return resultIndexes.length - 1;
+      }
+      if (next >= resultIndexes.length) {
+        return 0;
+      }
+      return next;
+    });
+  }
+
+  return (
+    <section className="youtube-panel" aria-label="YouTube arcade search">
+      <div className="youtube-panel-header">
+        <div>
+          <h2>{entry.title}</h2>
+          <p>YouTube search: {query}</p>
+        </div>
+        <div className="youtube-panel-actions">
+          <a
+            className="button secondary"
+            href={youtubeSearchUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Search aria-hidden="true" />
+            <span>Open results</span>
+          </a>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close YouTube search"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+      <div className="youtube-carousel" aria-label="YouTube result carousel">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => moveResult(-1)}
+          aria-label="Previous YouTube result"
+        >
+          <span aria-hidden="true">{"<"}</span>
+        </button>
+        <div className="youtube-result-tabs">
+          {resultIndexes.map((index) => (
+            <button
+              key={index}
+              className={resultIndex === index ? "active" : ""}
+              type="button"
+              onClick={() => setResultIndex(index)}
+            >
+              Result {index + 1}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => moveResult(1)}
+          aria-label="Next YouTube result"
+        >
+          <span aria-hidden="true">{">"}</span>
+        </button>
+      </div>
+      <iframe
+        src={youtubeUrl}
+        title={`YouTube search result ${resultIndex + 1} for ${query}`}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowFullScreen
+      />
+    </section>
+  );
+}
+
+function CopyProgressPanel({
+  progress,
+  title,
+}: {
+  progress: CopyProgress;
+  title: string;
+}) {
+  const hasFileProgress =
+    typeof progress.bytesCopied === "number" &&
+    typeof progress.bytesTotal === "number" &&
+    progress.bytesTotal > 0;
+  const percent = hasFileProgress
+    ? Math.min(100, Math.round((progress.bytesCopied! / progress.bytesTotal!) * 100))
+    : 0;
+
+  return (
+    <div className="copy-progress">
+      <div className="progress-row">
+        <div className="progress-label">
+          <strong>Items</strong>
+          <span>
+            {title} {progress.current} of {progress.total}: {progress.label}
+          </span>
+        </div>
+        <progress value={progress.current} max={progress.total} />
+      </div>
+      <div className="progress-row">
+        <div className="progress-label">
+          <strong>Current file</strong>
+          <span>
+            {progress.fileLabel || "Waiting for file..."}
+            {hasFileProgress
+              ? ` - ${formatTransferBytes(progress.bytesCopied!)} / ${formatTransferBytes(progress.bytesTotal!)} (${percent}%)`
+              : ""}
+          </span>
+        </div>
+        <progress
+          className="file-progress"
+          value={hasFileProgress ? progress.bytesCopied : 0}
+          max={hasFileProgress ? progress.bytesTotal : 1}
+        />
+      </div>
+    </div>
+  );
+}
+
+function withTransferProgress(
+  setProgress: (progress: CopyProgress) => void,
+  progress: CopyProgress,
+) {
+  setProgress(progress);
+  return ({ bytesCopied, bytesTotal, fileName }: CopyFileProgress) => {
+    setProgress({
+      ...progress,
+      bytesCopied,
+      bytesTotal,
+      fileLabel: fileName,
+    });
+  };
+}
+
+function formatTransferBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function SourceTile({
@@ -3321,6 +3838,7 @@ function RomTable({
   sampleTargetAssets,
   selectedIds,
   onToggle,
+  onOpenYoutube,
 }: {
   activeLabel: string;
   counterpartLabel: string;
@@ -3328,6 +3846,7 @@ function RomTable({
   sampleSourceAssets: Map<string, RomAsset>;
   sampleTargetAssets: Map<string, RomAsset>;
   selectedIds: Set<string>;
+  onOpenYoutube: (entry: RomEntry) => void;
   onToggle: (id: string) => void;
 }) {
   return (
@@ -3337,15 +3856,15 @@ function RomTable({
           <tr>
             <th className="select-col">Pick</th>
             <th className="status-col">Set</th>
-            <th>Name</th>
+            <th className="name-col">Name</th>
             <th className="rom-col">{activeLabel}</th>
             <th className="fbneo-col">{counterpartLabel}</th>
+            <th className="chd-col">CHDs</th>
             <th className="samples-col">Samples</th>
             <th className="region-col">Region</th>
             <th className="players-col">Players</th>
             <th className="year-col">Year</th>
             <th className="maker-col">Maker</th>
-            <th className="stats-col">Stats</th>
             <th className="media-col">Media</th>
           </tr>
         </thead>
@@ -3364,6 +3883,7 @@ function RomTable({
                 checked={selectedIds.has(entry.id)}
                 sampleSourceAssets={sampleSourceAssets}
                 sampleTargetAssets={sampleTargetAssets}
+                onOpenYoutube={() => onOpenYoutube(entry)}
                 onToggle={() => onToggle(entry.id)}
               />
             ))
@@ -3380,13 +3900,16 @@ function RomRow({
   sampleSourceAssets,
   sampleTargetAssets,
   onToggle,
+  onOpenYoutube,
 }: {
   entry: RomEntry;
   checked: boolean;
   sampleSourceAssets: Map<string, RomAsset>;
   sampleTargetAssets: Map<string, RomAsset>;
   onToggle: () => void;
+  onOpenYoutube: () => void;
 }) {
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const status = entry.inTarget
     ? "In set"
     : entry.available
@@ -3402,21 +3925,27 @@ function RomRow({
     sampleSourceAssets,
     sampleTargetAssets,
   );
-  const details = [
-    entry.cloneOf
-      ? `clone: ${entry.cloneOf}${entry.parentTitle ? ` (${entry.parentTitle})` : ""}`
-      : "",
-    entry.genre || entry.category,
-    entry.driverStatus,
-    entry.sourceFile ? `source: ${entry.sourceFile}` : "",
-    entry.dumpStatus ? `dump: ${entry.dumpStatus}` : "",
-    entry.isMechanical ? "mechanical" : "",
-    entry.isDevice ? "device" : "",
-    entry.sampleArchiveIds.length > 0
-      ? `samples: ${entry.sampleArchiveIds.join(", ")}`
-      : "",
-    entry.display,
-  ].filter(Boolean);
+  const chdStatus = getChdStatus(entry);
+  const detailItems = [
+    {
+      label: "Clone",
+      value: entry.cloneOf
+        ? `${entry.cloneOf}${entry.parentTitle ? ` (${entry.parentTitle})` : ""}`
+        : "",
+    },
+    { label: "Category", value: entry.genre || entry.category },
+    { label: "Driver", value: entry.driverStatus },
+    { label: "Source", value: entry.sourceFile },
+    { label: "Dump", value: entry.dumpStatus },
+    { label: "Mechanical", value: entry.isMechanical ? "yes" : "" },
+    { label: "Device", value: entry.isDevice ? "yes" : "" },
+    {
+      label: "Samples",
+      value: entry.sampleArchiveIds.join(", "),
+    },
+    { label: "CHDs", value: entry.diskNames.join(", ") },
+    { label: "Display", value: entry.display },
+  ].filter((item) => item.value);
 
   return (
     <tr className={checked ? "selected-row" : ""}>
@@ -3437,9 +3966,45 @@ function RomRow({
       <td className="status-col">
         <span className={`status-pill ${statusClass}`}>{status}</span>
       </td>
-      <td>
+      <td
+        className={`name-cell ${detailsExpanded ? "details-expanded" : ""}`}
+        onClick={() => setDetailsExpanded((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setDetailsExpanded((current) => !current);
+          }
+        }}
+        role="button"
+        tabIndex={0}
+        title="Click to expand details"
+      >
         <div className="game-title">{entry.title}</div>
-        <div className="game-detail">{details.join(" | ") || "Arcade"}</div>
+        {detailsExpanded ? (
+          <dl className="detail-list">
+            {detailItems.length > 0 ? (
+              detailItems.map((item) => (
+                <div key={item.label} className="detail-list-row">
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))
+            ) : (
+              <div className="detail-list-row">
+                <dt>Type</dt>
+                <dd>Arcade</dd>
+              </div>
+            )}
+          </dl>
+        ) : (
+          <div className="game-detail name-detail">
+            {detailItems.length > 0
+              ? detailItems
+                  .map((item) => `${item.label.toLowerCase()}: ${item.value}`)
+                  .join(" | ")
+              : "Arcade"}
+          </div>
+        )}
       </td>
       <td className="rom-col">
         <code className="rom-code">
@@ -3454,6 +4019,17 @@ function RomRow({
         {entry.counterpartTargetAssetName && (
           <div className="game-detail">{entry.counterpartTargetAssetName}</div>
         )}
+      </td>
+      <td className="chd-col">
+        <span
+          className={`sample-pill ${chdStatus.className}`}
+          title={chdStatus.title}
+        >
+          {chdStatus.label}
+        </span>
+        {chdStatus.detail ? (
+          <div className="game-detail">{chdStatus.detail}</div>
+        ) : null}
       </td>
       <td className="samples-col">
         <span
@@ -3470,31 +4046,15 @@ function RomRow({
       <td className="players-col">{entry.players || "-"}</td>
       <td className="year-col">{entry.year || "-"}</td>
       <td className="maker-col">{entry.manufacturer || "-"}</td>
-      <td className="stats-col">
-        <div className="compact-stat">
-          {entry.romCount ? `${entry.romCount} files` : "-"}
-        </div>
-        <div className="game-detail">
-          {[
-            entry.diskCount
-              ? `${entry.diskCount} disk${entry.diskCount === 1 ? "" : "s"}`
-              : "",
-            formatBytes(entry.romSize),
-          ]
-            .filter(Boolean)
-            .join(" | ")}
-        </div>
-      </td>
       <td className="media-col">
-        <a
+        <button
           className="icon-button table-link"
-          href={getScreenscraperUrl(entry)}
-          target="_blank"
-          rel="noreferrer"
-          title="Open ScreenScraper"
+          type="button"
+          onClick={onOpenYoutube}
+          title={`Search YouTube for ${entry.title} arcade`}
         >
-          <ExternalLink aria-hidden="true" />
-        </a>
+          <Search aria-hidden="true" />
+        </button>
       </td>
     </tr>
   );
@@ -3562,6 +4122,68 @@ function getSampleStatus(
     label: "No source",
     title: `Sample pack missing from source: ${unavailable.join(", ")}`,
   };
+}
+
+function getChdStatus(entry: RomEntry) {
+  if (!isChdRequired(entry)) {
+    return {
+      className: "sample-none",
+      detail: "",
+      label: "None",
+      title: "No CHD folder is required by this ROM.",
+    };
+  }
+
+  const detail =
+    entry.chdTargetAssetName ||
+    entry.chdAssetName ||
+    entry.diskNames.slice(0, 3).join(", ") ||
+    entry.id;
+
+  if (entry.chdInTarget) {
+    return {
+      className: "sample-present",
+      detail,
+      label: "Ready",
+      title: `CHD folder present: ${entry.chdTargetAssetName || entry.id}`,
+    };
+  }
+
+  if (entry.chdAvailable) {
+    return {
+      className: "sample-missing",
+      detail,
+      label: "Missing",
+      title: `CHD folder can be copied from the active full set: ${entry.chdAssetName || entry.id}`,
+    };
+  }
+
+  return {
+    className: "sample-unavailable",
+    detail,
+    label: "No source",
+    title: `Required CHD folder was not found in the active full set: ${entry.id}`,
+  };
+}
+
+function isChdRequired(entry: RomEntry) {
+  return entry.diskCount > 0 || entry.diskNames.length > 0;
+}
+
+function getYoutubeSearchTitle(entry: RomEntry) {
+  return entry.title
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || entry.id;
+}
+
+function getYoutubeSearchEmbedUrl(query: string, resultIndex: number) {
+  const encodedQuery = encodeURIComponent(query);
+  return `https://www.youtube.com/embed?listType=search&list=${encodedQuery}&index=${resultIndex + 1}`;
+}
+
+function getYoutubeSearchUrl(query: string) {
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
 }
 
 function getRequiredSampleIds(

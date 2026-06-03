@@ -74,6 +74,7 @@ function parseMachine(node: Element): ParsedRom | null {
   const statusDriver = drivers.find((driver) => driver.hasAttribute('status') || driver.hasAttribute('emulation'));
   const romNodes = Array.from(node.querySelectorAll(':scope > rom'));
   const diskNodes = Array.from(node.querySelectorAll(':scope > disk'));
+  const diskNames = diskNodes.map((disk) => attr(disk, 'name')).filter(Boolean);
   const chipNodes = Array.from(node.querySelectorAll(':scope > chip'));
   const deviceNodes = Array.from(node.querySelectorAll(':scope > device_ref'));
   const sampleNames = Array.from(node.querySelectorAll(':scope > sample'))
@@ -131,6 +132,7 @@ function parseMachine(node: Element): ParsedRom | null {
     chipCount: chipNodes.length,
     deviceCount: deviceNodes.length,
     diskCount: diskNodes.length,
+    diskNames,
     dumpStatus,
     romCount: romNodes.length,
     romSize,
@@ -152,6 +154,7 @@ function parseMachine(node: Element): ParsedRom | null {
       controls,
       driverStatus,
       dumpStatus,
+      diskNames.join(' '),
     ]
       .filter(Boolean)
       .join(' ')
@@ -215,6 +218,7 @@ function createMetadataBackedEntry(
     chipCount: 0,
     deviceCount: 0,
     diskCount: 0,
+    diskNames: [],
     dumpStatus: '',
     romCount: 1,
     romSize: asset.size ?? 0,

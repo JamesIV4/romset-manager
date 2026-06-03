@@ -419,7 +419,7 @@ code {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto auto;
+  grid-template-columns: minmax(260px, 1fr) auto;
   align-items: end;
   gap: 12px;
   padding: 12px;
@@ -450,35 +450,6 @@ code {
   border: 0;
   outline: 0;
   color: #24211d;
-}
-
-.segmented {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(82px, auto);
-  overflow: hidden;
-  border: 1px solid #d6d0c4;
-  border-radius: 8px;
-  background: #f5f0e7;
-}
-
-.segmented button {
-  height: 40px;
-  padding: 0 12px;
-  border-right: 1px solid #d6d0c4;
-  background: transparent;
-  color: #5e574e;
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.segmented button:last-child {
-  border-right: 0;
-}
-
-.segmented button.active {
-  background: #216e5b;
-  color: #fffefa;
 }
 
 .toolbar-selects label {
@@ -542,10 +513,28 @@ code {
   background: #f7fbf7;
 }
 
+.copy-progress {
+  display: grid;
+  align-items: stretch;
+}
+
 .copy-progress > div,
 .remove-progress > div {
   display: grid;
   min-width: 230px;
+  gap: 1px;
+}
+
+.copy-progress .progress-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.45fr) minmax(240px, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.copy-progress .progress-label {
+  display: grid;
+  min-width: 0;
   gap: 1px;
 }
 
@@ -559,10 +548,19 @@ code {
   white-space: nowrap;
 }
 
+.copy-progress .progress-label span {
+  color: #38332d;
+  white-space: normal;
+}
+
 .copy-progress progress,
 .remove-progress progress {
   width: 100%;
   height: 12px;
+  accent-color: #216e5b;
+}
+
+.copy-progress .file-progress {
   accent-color: #216e5b;
 }
 
@@ -582,6 +580,85 @@ code {
   width: 18px;
   height: 18px;
   color: #8a641f;
+}
+
+.youtube-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid #e4ded2;
+  background: #fbf7ef;
+}
+
+.youtube-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.youtube-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.youtube-panel h2 {
+  margin: 0;
+  color: #24211d;
+  font-size: 16px;
+}
+
+.youtube-panel p {
+  margin: 2px 0 0;
+  color: #6e665c;
+  font-size: 12px;
+}
+
+.youtube-carousel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.youtube-carousel .icon-button span {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.youtube-result-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.youtube-result-tabs button {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d6d0c4;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #5e574e;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.youtube-result-tabs button.active {
+  border-color: #216e5b;
+  background: #216e5b;
+  color: #fffefa;
+}
+
+.youtube-panel iframe {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 320px;
+  border: 1px solid #d6d0c4;
+  border-radius: 8px;
+  background: #111111;
 }
 
 .table-wrap {
@@ -611,7 +688,7 @@ th {
 }
 
 td {
-  height: 74px;
+  height: auto;
   padding: 9px 10px;
   border-bottom: 1px solid #eee8dd;
   color: #38332d;
@@ -642,6 +719,10 @@ tbody tr:hover {
   width: 92px;
 }
 
+.name-col {
+  width: auto;
+}
+
 .media-col {
   width: 58px;
   text-align: center;
@@ -659,6 +740,10 @@ tbody tr:hover {
   width: 104px;
 }
 
+.chd-col {
+  width: 104px;
+}
+
 .region-col {
   width: 88px;
 }
@@ -670,10 +755,6 @@ tbody tr:hover {
 
 .maker-col {
   width: 132px;
-}
-
-.stats-col {
-  width: 84px;
 }
 
 .status-pill {
@@ -737,12 +818,12 @@ tbody tr:hover {
   overflow: hidden;
   color: #24211d;
   font-weight: 800;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.game-detail,
-.compact-stat {
+.game-detail {
   overflow: hidden;
   color: #6e665c;
   font-size: 12px;
@@ -750,9 +831,55 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
-.compact-stat {
+.name-cell {
+  cursor: pointer;
+  min-width: 0;
+  max-width: 0;
+  overflow: hidden;
+}
+
+.name-cell:focus-visible {
+  outline: 2px solid #216e5b;
+  outline-offset: -3px;
+}
+
+.name-detail {
+  display: block;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.details-expanded .name-detail {
+  display: block;
+}
+
+.detail-list {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+}
+
+.detail-list-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.detail-list dt {
+  color: #6e665c;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.detail-list dd {
+  min-width: 0;
+  margin: 0;
   color: #38332d;
-  font-weight: 700;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .rom-code {
@@ -765,6 +892,10 @@ tbody tr:hover {
 .table-link {
   color: #216e5b;
   text-decoration: none;
+}
+
+button.table-link {
+  cursor: pointer;
 }
 
 .empty-cell {
@@ -837,16 +968,6 @@ tbody tr:hover {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .segmented {
-    grid-auto-flow: row;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
-  .segmented button {
-    border-right: 1px solid #d6d0c4;
-    border-bottom: 1px solid #d6d0c4;
-  }
-
   .toolbar-selects {
     align-items: stretch;
   }
@@ -893,10 +1014,6 @@ tbody tr:hover {
     padding: 10px;
   }
 
-  .segmented {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .option-row {
     align-items: flex-start;
     flex-direction: column;
@@ -906,6 +1023,10 @@ tbody tr:hover {
   .remove-progress {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .copy-progress .progress-row {
+    grid-template-columns: 1fr;
   }
 
   .table-wrap {
